@@ -100,6 +100,32 @@ export async function secFetchJson<T>(url: string): Promise<T> {
   });
 }
 
+/** Same throttle and headers, for XML documents in the EDGAR archives. */
+export async function secFetchText(url: string): Promise<string> {
+  return throttle(async () => {
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": secUserAgent(),
+          "Accept-Encoding": "gzip, deflate",
+        },
+      });
+
+      if (res.status === 404) throw new NotFoundError(url);
+      if (res.ok) return res.text();
+
+      if ((res.status === 429 || res.status >= 500) && attempt < MAX_RETRIES) {
+        await sleep(500 * 2 ** (attempt - 1));
+        continue;
+      }
+
+      throw new Error(`HTTP ${res.status} for ${url}`);
+    }
+
+    throw new Error(`exhausted retries for ${url}`);
+  });
+}
+
 export class NotFoundError extends Error {
   constructor(url: string) {
     super(`Not found: ${url}`);

@@ -23,12 +23,8 @@
  *    recorded, so downstream code never silently compares EUR to USD.
  */
 
-import {
-  CONCEPTS,
-  CONCEPT_NAMES,
-  type ConceptDef,
-  type ConceptName,
-} from "./concepts.js";
+import { CONCEPTS, CONCEPT_NAMES, type ConceptDef } from "./concepts.js";
+import type { ConceptName } from "./concepts.js";
 import type { CompanyFacts, XbrlFact } from "./types.js";
 
 const DAY_MS = 86_400_000;
@@ -218,6 +214,35 @@ export interface NormalizeOptions {
   maxQuarterly?: number;
 }
 
+/**
+ * Fiscal year ends for this company, taken from a duration concept.
+ *
+ * Balance-sheet instants carry no period length, so there is nothing in the
+ * fact itself to say whether 2025-03-31 is a fiscal year end or a first
+ * quarter close. Anchoring them to the dates on which annual income-statement
+ * periods end is what separates the two.
+ */
+function detectAnnualEnds(
+  facts: CompanyFacts,
+  basis: { taxonomy: Taxonomy; currency: string },
+  limit: number,
+): string[] {
+  for (const anchor of ["revenue", "netIncome", "operatingCashFlow"] as const) {
+    const found = extractConcept(facts, anchor, "annual", basis);
+    if (found && found.values.length > 0) {
+      return found.values.slice(-limit).map((v) => v.end);
+    }
+  }
+  return [];
+}
+
+function nearAny(end: string, candidates: readonly string[], toleranceDays = 5): boolean {
+  const target = Date.parse(end);
+  return candidates.some(
+    (c) => Math.abs(Date.parse(c) - target) / DAY_MS <= toleranceDays,
+  );
+}
+
 export function normalize(
   facts: CompanyFacts,
   cik: string,
@@ -237,7 +262,33 @@ export function normalize(
     missing: [],
   };
 
+  const annualEnds = detectAnnualEnds(facts, basis, maxAnnual);
+
   for (const name of CONCEPT_NAMES) {
+    const def: ConceptDef = CONCEPTS[name];
+
+    if (def.kind === "instant") {
+      // Instants are periodicity-agnostic, so one extraction serves both.
+      const all = extractConcept(facts, name, "annual", basis);
+      if (!all) {
+        out.missing.push(name);
+        continue;
+      }
+
+      // Without this filter the annual series would be truncated to the most
+      // recent balance-sheet dates, which are quarterly — dropping the prior
+      // fiscal year end that every year-over-year comparison depends on.
+      const annualValues =
+        annualEnds.length > 0
+          ? all.values.filter((v) => nearAny(v.end, annualEnds))
+          : all.values;
+
+      if (annualValues.length > 0) out.annual[name] = annualValues.slice(-maxAnnual);
+      out.quarterly[name] = all.values.slice(-maxQuarterly);
+      out.tagsUsed[name] = all.tags;
+      continue;
+    }
+
     const annual = extractConcept(facts, name, "annual", basis);
     const quarterly = extractConcept(facts, name, "quarterly", basis);
 

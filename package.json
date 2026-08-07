@@ -6,7 +6,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "smoke": "tsx src/smoke.ts",
-    "ingest": "tsx src/scripts/ingest.ts"
+    "ingest": "tsx src/scripts/ingest.ts",
+    "strength": "tsx src/scripts/strength.ts",
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "repository": {
     "type": "git",
@@ -21,6 +23,7 @@
   "homepage": "https://github.com/arnab2026-ux/StockResearch#readme",
   "dependencies": {
     "dotenv": "^17.4.2",
+    "fast-xml-parser": "^5.10.1",
     "firecrawl": "^4.32.0",
     "playwright": "^1.62.1"
   },
