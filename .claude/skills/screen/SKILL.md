@@ -22,6 +22,7 @@ Useful variants:
 | `npm run screen -- --all` | Detail for every company, not just qualifiers |
 | `npm run screen -- --window=120` | Widen the ownership lookback from 90 days |
 | `npm run screen -- --refresh` | Bypass all caches and refetch |
+| `npm run screen -- --no-vault` | Skip writing to the Obsidian vault |
 
 A full run takes several minutes: it makes roughly 200 rate-limited requests
 and is deliberately throttled. Do not parallelise it or remove the throttles.
@@ -81,9 +82,15 @@ value.
 
 ## Known limitations — state these when they affect a conclusion
 
-- **TTM free cash flow usually falls back to the latest fiscal year**, because
-  most filers never tag Q4 discretely. The basis column shows `FY` when that
-  happens, and an FY figure can be up to three quarters stale.
+- **Free cash flow basis is labelled `TTM` or `FY` per company.** TTM is
+  reconstructed as prior fiscal year plus current year-to-date less the
+  year-ago year-to-date. `FY` means no year-to-date data was available to roll
+  it forward — mostly foreign filers — and that figure can be stale by up to
+  three quarters.
+- **A single outsized earnings surprise can dominate the surprise factor**,
+  since magnitude is scored on a four-quarter mean. GOOGL currently shows a
+  +216% quarter, which is almost certainly a one-off item rather than
+  operational. Read the per-quarter detail before relying on that factor.
 - **Analyst sentiment comes from Nasdaq's consensus label**, not a
   buy/hold/sell distribution. TipRanks would give per-analyst track records
   and a true distribution, but it fingerprints non-browser clients and returns
@@ -99,6 +106,31 @@ value.
 - **A lone 13D/G amendment is indeterminate.** Its prior level lies outside
   the window, so no delta is claimed; the count appears in the filter detail.
   Widening `--window` converts some of these into real deltas.
+
+## The Obsidian vault
+
+When `OBSIDIAN_VAULT_PATH` is set, results are written as plain markdown —
+directly to disk, no plugin and no running Obsidian required.
+
+- `10-Companies/{TICKER}.md` — one note per company
+- `20-Screens/{date}-screen.md` — one note per run, wikilinked to the companies
+
+Each company note has three zones with **different owners**:
+
+| Zone | Owner | Behaviour |
+| --- | --- | --- |
+| Frontmatter | machine | Rewritten every run (except `status`, which is preserved) |
+| `## Event log` | machine | Append-only, deduplicated; entries are never rewritten |
+| `## Latest screen` | machine | Replaced wholesale each run |
+| `## Thesis` and anything else | **the user** | Never touched |
+
+Never write into `## Thesis` or add machine content outside the zones above.
+The separation is what lets the screen accumulate state alongside the user's
+own analysis, and it is covered by tests in `src/vault/markdown.test.ts`.
+
+The vault is also what makes change detection work: score movement and
+ownership shifts are differences against the previous run's frontmatter, so
+there is no week-over-week signal without it.
 
 ## After running
 

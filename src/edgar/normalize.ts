@@ -61,6 +61,16 @@ export interface NormalizedCompany {
   tagsUsed: Partial<Record<ConceptName, string[]>>;
   annual: Partial<Record<ConceptName, PeriodValue[]>>;
   quarterly: Partial<Record<ConceptName, PeriodValue[]>>;
+  /**
+   * Every duration fact regardless of span, deduped.
+   *
+   * The annual and quarterly buckets discard the six- and nine-month
+   * year-to-date periods that 10-Qs report, but those are exactly what a real
+   * trailing-twelve-month figure needs: most filers never tag Q4 on its own,
+   * so TTM has to be reconstructed as prior fiscal year plus current
+   * year-to-date less the year-ago year-to-date.
+   */
+  durations: Partial<Record<ConceptName, PeriodValue[]>>;
   /** Concepts we could not find under any tag in either chain. */
   missing: ConceptName[];
 }
@@ -163,10 +173,13 @@ function tagChain(def: ConceptDef, taxonomy: Taxonomy): readonly string[] {
  * Pull one concept out of the fact set, merging every tag in its chain so a
  * mid-history tag switch does not truncate the series.
  */
+/** `all` keeps every duration span, including year-to-date periods. */
+type SpanFilter = Periodicity | "all";
+
 function extractConcept(
   facts: CompanyFacts,
   name: ConceptName,
-  periodicity: Periodicity,
+  periodicity: SpanFilter,
   basis: { taxonomy: Taxonomy; currency: string },
 ): { values: PeriodValue[]; tags: string[] } | undefined {
   const def: ConceptDef = CONCEPTS[name];
@@ -194,6 +207,7 @@ function extractConcept(
         : series.filter((f) => {
             const days = spanDays(f);
             if (days === undefined) return false;
+            if (periodicity === "all") return days > 0;
             return inRange(days, periodicity === "annual" ? ANNUAL_DAYS : QUARTER_DAYS);
           });
 
@@ -259,6 +273,7 @@ export function normalize(
     tagsUsed: {},
     annual: {},
     quarterly: {},
+    durations: {},
     missing: [],
   };
 
@@ -305,6 +320,9 @@ export function normalize(
       out.quarterly[name] = quarterly.values.slice(-maxQuarterly);
       out.tagsUsed[name] ??= quarterly.tags;
     }
+
+    const all = extractConcept(facts, name, "all", basis);
+    if (all) out.durations[name] = all.values.slice(-(maxQuarterly * 3));
   }
 
   return out;

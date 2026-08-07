@@ -8,7 +8,7 @@
  */
 
 import type { ConceptName } from "../edgar/concepts.js";
-import type { NormalizedCompany, Periodicity } from "../edgar/normalize.js";
+import type { NormalizedCompany, PeriodValue, Periodicity } from "../edgar/normalize.js";
 import { valueAt } from "../edgar/normalize.js";
 import {
   derive,
@@ -122,58 +122,138 @@ export interface FlowValue {
   basis: FlowBasis;
   /** Explains the basis in report output, e.g. why TTM was unavailable. */
   note: string;
+  /** Period end the figure runs to. */
+  asOf: string | undefined;
+}
+
+function daysBetween(a: string, b: string): number {
+  return Math.abs(Date.parse(a) - Date.parse(b)) / DAY_MS;
+}
+
+/** The day after a period ends, i.e. the start of the next fiscal year. */
+function dayAfter(iso: string): string {
+  const d = new Date(Date.parse(iso) + DAY_MS);
+  return d.toISOString().slice(0, 10);
+}
+
+function span(v: PeriodValue): number | undefined {
+  return v.start ? (Date.parse(v.end) - Date.parse(v.start)) / DAY_MS : undefined;
 }
 
 /**
- * Trailing-twelve-month sum of a flow concept.
+ * Trailing-twelve-month value of a flow concept.
  *
- * Prefers four discrete quarters. That often is not possible: most filers
- * never tag Q4 separately, because the 10-K reports the full year and the
- * fourth quarter is only implied by subtraction. When four quarters spanning
- * roughly a year are not available we fall back to the latest fiscal year and
- * say so, rather than silently mixing bases or sub-annual sums.
+ * Most filers never tag the fourth quarter on its own — the 10-K reports the
+ * full year and Q4 is only implied by subtraction — so summing four discrete
+ * quarters usually fails. The reliable construction uses the year-to-date
+ * figures that every 10-Q reports:
+ *
+ *     TTM = prior fiscal year + current YTD − year-ago YTD
+ *
+ * For NVIDIA that is 102.72B + 50.34B − 27.41B = 125.65B, against a fiscal
+ * year figure of 102.72B. Using the fiscal year alone understates trailing
+ * cash flow by 22% two quarters after year end, which flows straight into FCF
+ * yield and therefore a quarter of the composite score.
+ *
+ * Falls back to four discrete quarters where they exist, then to the fiscal
+ * year, labelling the basis in every case rather than presenting a stale
+ * annual figure as though it were trailing.
  */
 export function trailingTwelveMonths(
   company: NormalizedCompany,
   name: ConceptName,
 ): FlowValue {
-  const quarters = company.quarterly[name] ?? [];
+  const cikUrl = `https://data.sec.gov/api/xbrl/companyfacts/CIK${company.cik}.json`;
+  const retrievedAt = new Date().toISOString().slice(0, 10);
 
+  const annualSeries = company.annual[name] ?? [];
+  const latestFy = annualSeries.at(-1);
+  const durations = company.durations[name] ?? [];
+
+  // --- preferred: fiscal year rolled forward by year-to-date ---------------
+  if (latestFy?.start) {
+    const fyStart = dayAfter(latestFy.end);
+
+    // Year-to-date periods of the current fiscal year all share its start.
+    const currentYtd = durations
+      .filter((d) => d.start && daysBetween(d.start, fyStart) <= 5 && d.end > latestFy.end)
+      .sort((a, b) => a.end.localeCompare(b.end))
+      .at(-1);
+
+    const currentSpan = currentYtd ? span(currentYtd) : undefined;
+
+    if (currentYtd && currentSpan !== undefined) {
+      // The equivalent stretch of the prior year: same start-of-year anchor,
+      // same length. Comparing unlike spans would corrupt the subtraction.
+      const priorYtd = durations.find((d) => {
+        if (!d.start || !latestFy.start) return false;
+        const s = span(d);
+        return (
+          daysBetween(d.start, latestFy.start) <= 5 &&
+          s !== undefined &&
+          Math.abs(s - currentSpan) <= 10
+        );
+      });
+
+      if (priorYtd) {
+        const value = latestFy.value + currentYtd.value - priorYtd.value;
+        return {
+          amount: sourced(value, {
+            name: `Derived from SEC EDGAR (FY to ${latestFy.end} rolled forward to ${currentYtd.end})`,
+            url: cikUrl,
+            asOf: currentYtd.end,
+            retrievedAt,
+          }),
+          basis: "ttm",
+          note:
+            `FY to ${latestFy.end} plus ${Math.round(currentSpan)}d YTD to ` +
+            `${currentYtd.end} less year-ago YTD to ${priorYtd.end}`,
+          asOf: currentYtd.end,
+        };
+      }
+    }
+  }
+
+  // --- fallback: four discrete quarters ------------------------------------
+  const quarters = company.quarterly[name] ?? [];
   if (quarters.length >= 4) {
     const last4 = quarters.slice(-4);
     const first = last4[0];
     const last = last4[last4.length - 1];
 
     if (first?.start && last) {
-      const span = (Date.parse(last.end) - Date.parse(first.start)) / DAY_MS;
-
-      if (span >= 330 && span <= 400) {
-        const total = last4.reduce((sum, q) => sum + q.value, 0);
+      const total = (Date.parse(last.end) - Date.parse(first.start)) / DAY_MS;
+      if (total >= 330 && total <= 400) {
         return {
-          amount: sourced(total, {
-            name: `SEC EDGAR 10-Q/10-K (4 quarters to ${last.end})`,
-            url: `https://data.sec.gov/api/xbrl/companyfacts/CIK${company.cik}.json`,
-            asOf: last.end,
-            retrievedAt: new Date().toISOString().slice(0, 10),
-          }),
+          amount: sourced(
+            last4.reduce((sum, q) => sum + q.value, 0),
+            {
+              name: `SEC EDGAR 10-Q/10-K (4 quarters to ${last.end})`,
+              url: cikUrl,
+              asOf: last.end,
+              retrievedAt,
+            },
+          ),
           basis: "ttm",
           note: `sum of 4 quarters, ${first.start} to ${last.end}`,
+          asOf: last.end,
         };
       }
     }
   }
 
-  const annual = (company.annual[name] ?? []).at(-1);
-  if (annual) {
+  // --- last resort: the fiscal year as filed -------------------------------
+  if (latestFy) {
     return {
-      amount: sourced(annual.value, {
-        name: `SEC EDGAR ${annual.form} (${annual.accn})`,
-        url: `https://data.sec.gov/api/xbrl/companyfacts/CIK${company.cik}.json`,
-        asOf: annual.end,
-        retrievedAt: new Date().toISOString().slice(0, 10),
+      amount: sourced(latestFy.value, {
+        name: `SEC EDGAR ${latestFy.form} (${latestFy.accn})`,
+        url: cikUrl,
+        asOf: latestFy.end,
+        retrievedAt,
       }),
       basis: "fy",
-      note: `fiscal year to ${annual.end}; four discrete quarters unavailable`,
+      note: `fiscal year to ${latestFy.end}; no year-to-date data to roll it forward`,
+      asOf: latestFy.end,
     };
   }
 
@@ -181,6 +261,7 @@ export function trailingTwelveMonths(
     amount: unverified(`no annual or quarterly data for ${name}`),
     basis: "fy",
     note: "no data",
+    asOf: undefined,
   };
 }
 
@@ -201,6 +282,7 @@ export function ttmFreeCashFlow(company: NormalizedCompany): FlowValue {
     }),
     basis,
     note: basis === "ttm" ? ocf.note : `${ocf.note}; capex ${capex.note}`,
+    asOf: ocf.asOf,
   };
 }
 

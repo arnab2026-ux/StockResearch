@@ -28,6 +28,7 @@ import {
   type ScreenedCompany,
 } from "../screen/run.js";
 import { FACTOR_LABELS, WEIGHTS, type FactorName } from "../screen/score.js";
+import { writeVault } from "../vault/write.js";
 
 function money(n: number | undefined, ccy = "USD"): string {
   if (n === undefined) return "UNVERIFIED";
@@ -226,6 +227,38 @@ async function main(): Promise<void> {
 
   const detailSet = showAll || explicit.length ? ranked : qualifying.length ? qualifying : ranked.slice(0, 5);
   for (const c of detailSet) renderCompany(c);
+
+  // Persist last, so a vault problem cannot cost you the run's output.
+  const vaultRoot = process.env.OBSIDIAN_VAULT_PATH?.trim();
+  if (vaultRoot && !args.includes("--no-vault")) {
+    try {
+      const result = await writeVault(vaultRoot, companies, {
+        windowDays: insiderWindowDays,
+        sectorMedians: medians,
+      });
+
+      console.log(`\n\n── Obsidian vault ${"─".repeat(58)}`);
+      console.log(`  ${result.companiesWritten} company notes updated in ${vaultRoot}`);
+      console.log(`  screen note: ${result.screenNotePath}`);
+
+      if (result.changes.length) {
+        console.log(`\n  Changes since the last run:`);
+        for (const change of result.changes.slice(0, 25)) console.log(`    ${change}`);
+        if (result.changes.length > 25) {
+          console.log(`    …and ${result.changes.length - 25} more`);
+        }
+      } else {
+        console.log(`  No changes since the last run.`);
+      }
+    } catch (err) {
+      console.error(
+        `\n  Vault write failed: ${err instanceof Error ? err.message : err}`,
+      );
+      console.error(`  The screen output above is unaffected.`);
+    }
+  } else if (!vaultRoot) {
+    console.log(`\n\n  OBSIDIAN_VAULT_PATH not set — results not persisted.`);
+  }
 
   console.log(`\n\n${"═".repeat(78)}`);
   console.log("Research output only. This is not a recommendation to buy or sell.");

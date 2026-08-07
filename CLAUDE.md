@@ -118,6 +118,29 @@ Do not "simplify" them away:
 Non-USD and IFRS filers exist in the universe (ASML reports US-GAAP in EUR;
 GFS files IFRS). Currency and taxonomy are detected per company.
 
+## Obsidian vault — three zones, different owners
+
+`OBSIDIAN_VAULT_PATH` points at the vault root (the folder containing
+`.obsidian`). Notes are written directly to disk: a vault is just markdown,
+Obsidian picks up external edits, and a direct write needs no plugin, no API
+key, and no running app — which matters for scheduled runs.
+
+Frontmatter, `## Event log`, and `## Latest screen` are machine-owned.
+`## Thesis` and anything else belong to the user and are never touched. The
+merge logic is in `src/vault/markdown.ts` with tests; get it wrong once and it
+eats someone's notes.
+
+The vault is what makes change detection possible — score and ownership
+movement are diffs against the previous run's frontmatter.
+
+## TTM is reconstructed, not taken from the 10-K
+
+Most filers never tag Q4 discretely, so summing four quarters fails. Real TTM
+is `prior FY + current YTD − year-ago YTD`, using the 6- and 9-month spans in
+10-Qs that the annual and quarterly buckets discard. This is not cosmetic:
+NVDA's FY understated trailing FCF by 22%, and SWKS's *overstated* it by more
+than 2x. `FlowValue.basis` says `ttm` or `fy` per company.
+
 ## Schedule 13D/G — two traps
 
 1. **A company's submissions feed contains filings where it is the filer, not

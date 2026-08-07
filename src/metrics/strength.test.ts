@@ -4,7 +4,13 @@ import { test, describe } from "node:test";
 import { normalize } from "../edgar/normalize.js";
 import type { CompanyFacts, XbrlFact } from "../edgar/types.js";
 import { isVerified, valueOf } from "../lib/provenance.js";
-import { computeRatios, readAt, snapshotAt, trailingTwelveMonths } from "./fundamentals.js";
+import {
+  computeRatios,
+  readAt,
+  snapshotAt,
+  trailingTwelveMonths,
+  ttmFreeCashFlow,
+} from "./fundamentals.js";
 import { altmanZ, piotroskiFScore } from "./strength.js";
 
 interface Line {
@@ -190,7 +196,7 @@ describe("trailing twelve months", () => {
     assert.equal(valueOf(ttm.amount), 100);
   });
 
-  test("falls back to the fiscal year and says so when quarters are incomplete", () => {
+  test("falls back to the fiscal year and says so when nothing newer exists", () => {
     const c = build([
       {
         tag: "NetCashProvidedByUsedInOperatingActivities",
@@ -201,7 +207,90 @@ describe("trailing twelve months", () => {
     const ttm = trailingTwelveMonths(c, "operatingCashFlow");
     assert.equal(ttm.basis, "fy");
     assert.equal(valueOf(ttm.amount), 95);
-    assert.match(ttm.note, /four discrete quarters unavailable/);
+    assert.match(ttm.note, /no year-to-date data/);
+  });
+
+  test("rolls the fiscal year forward using year-to-date figures", () => {
+    // The NVIDIA shape: FY plus a current-year quarter less the year-ago one.
+    const c = build([
+      {
+        tag: "NetCashProvidedByUsedInOperatingActivities",
+        values: [
+          // Prior fiscal year, and the year-ago quarter inside it.
+          { start: "2025-01-27", end: "2026-01-25", val: 102.72 },
+          { start: "2025-01-27", end: "2025-04-27", val: 27.41 },
+          // Current fiscal year to date.
+          { start: "2026-01-26", end: "2026-04-26", val: 50.34 },
+        ],
+      },
+    ]);
+
+    const ttm = trailingTwelveMonths(c, "operatingCashFlow");
+    assert.equal(ttm.basis, "ttm");
+    assert.ok(
+      Math.abs((valueOf(ttm.amount) ?? 0) - 125.65) < 0.01,
+      `expected 125.65, got ${valueOf(ttm.amount)}`,
+    );
+    assert.equal(ttm.asOf, "2026-04-26");
+  });
+
+  test("uses the longest year-to-date period available", () => {
+    const c = build([
+      {
+        tag: "NetCashProvidedByUsedInOperatingActivities",
+        values: [
+          { start: "2025-01-27", end: "2026-01-25", val: 100 },
+          { start: "2025-01-27", end: "2025-04-27", val: 20 },
+          { start: "2025-01-27", end: "2025-10-26", val: 60 },
+          { start: "2026-01-26", end: "2026-04-26", val: 30 },
+          { start: "2026-01-26", end: "2026-10-25", val: 80 },
+        ],
+      },
+    ]);
+
+    // Should pair the 9-month periods, not the quarters: 100 + 80 - 60.
+    const ttm = trailingTwelveMonths(c, "operatingCashFlow");
+    assert.equal(valueOf(ttm.amount), 120);
+    assert.equal(ttm.asOf, "2026-10-25");
+  });
+
+  test("does not subtract a mismatched span", () => {
+    // Current YTD is 9 months but only a year-ago quarter exists. Pairing
+    // them would understate the deduction and inflate TTM.
+    const c = build([
+      {
+        tag: "NetCashProvidedByUsedInOperatingActivities",
+        values: [
+          { start: "2025-01-27", end: "2026-01-25", val: 100 },
+          { start: "2025-01-27", end: "2025-04-27", val: 20 },
+          { start: "2026-01-26", end: "2026-10-25", val: 80 },
+        ],
+      },
+    ]);
+
+    const ttm = trailingTwelveMonths(c, "operatingCashFlow");
+    assert.equal(ttm.basis, "fy");
+    assert.equal(valueOf(ttm.amount), 100);
+  });
+
+  test("free cash flow falls back to FY basis if either leg is annual-only", () => {
+    const c = build([
+      {
+        tag: "NetCashProvidedByUsedInOperatingActivities",
+        values: [
+          { start: "2025-01-01", end: "2025-12-31", val: 100 },
+          { start: "2025-01-01", end: "2025-03-31", val: 20 },
+          { start: "2026-01-01", end: "2026-03-31", val: 30 },
+        ],
+      },
+      {
+        tag: "PaymentsToAcquirePropertyPlantAndEquipment",
+        values: [{ start: "2025-01-01", end: "2025-12-31", val: 10 }],
+      },
+    ]);
+
+    const fcf = ttmFreeCashFlow(c);
+    assert.equal(fcf.basis, "fy", "mixing a TTM numerator with annual capex would be wrong");
   });
 });
 
