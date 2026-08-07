@@ -1,0 +1,31 @@
+{
+  "name": "stockresearch",
+  "version": "1.0.0",
+  "description": "Stock research platform for US equities.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "smoke": "tsx src/smoke.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arnab2026-ux/StockResearch.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/arnab2026-ux/StockResearch/issues"
+  },
+  "homepage": "https://github.com/arnab2026-ux/StockResearch#readme",
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "firecrawl": "^4.32.0",
+    "playwright": "^1.62.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "tsx": "^4.23.10",
+    "typescript": "^7.0.2"
+  }
+}
