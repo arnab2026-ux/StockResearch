@@ -133,16 +133,25 @@ describe("major holder form matching", () => {
   });
 });
 
+const NO_HOLDERS = {
+  netPercentChange: 0,
+  increases: [],
+  decreases: [],
+  indeterminate: [],
+  filedByCompanyCount: 0,
+  consideredCount: 0,
+};
+
 describe("conviction filtering", () => {
   function activity(codes: [string, number, number, string][]): InsiderActivity {
     return {
       cik: "0000000001",
-      windowDays: 14,
-      since: "2026-07-24",
+      windowDays: 90,
+      since: "2026-05-09",
       transactions: codes.flatMap(([code, shares, price, ad]) =>
         parseForm4(form4(txn(code, shares, price, ad)), META),
       ),
-      majorHolderFilings: [],
+      majorHolders: NO_HOLDERS,
       parseFailures: [],
     };
   }
@@ -160,7 +169,7 @@ describe("conviction filtering", () => {
     assert.equal(summary.buyCount, 1);
     assert.equal(summary.buyValue, 50_000);
     assert.equal(summary.excludedCount, 3);
-    assert.equal(summary.hasSignal, true);
+    assert.equal(summary.netAccumulation, true);
   });
 
   test("a grant-only filing produces no signal", () => {
@@ -168,7 +177,19 @@ describe("conviction filtering", () => {
 
     assert.equal(summary.buyCount, 0);
     assert.equal(summary.buyValue, 0);
-    assert.equal(summary.hasSignal, false);
+    assert.equal(summary.netAccumulation, false);
+  });
+
+  test("net selling is not accumulation", () => {
+    const summary = summariseInsiderActivity(
+      activity([
+        ["P", 100, 50, "A"],
+        ["S", 1000, 50, "D"],
+      ]),
+    );
+
+    assert.ok(summary.netValue < 0);
+    assert.equal(summary.netAccumulation, false);
   });
 
   test("nets sales against purchases", () => {
@@ -191,21 +212,52 @@ describe("conviction filtering", () => {
     assert.equal(summary.excludedCount, 1);
   });
 
-  test("13D/G filings alone constitute a signal", () => {
-    const base = activity([]);
+  test("a rising 5%+ holder stake alone constitutes accumulation", () => {
     const summary = summariseInsiderActivity({
-      ...base,
-      majorHolderFilings: [
-        {
-          form: "SC 13D",
-          filedAt: "2026-08-01",
-          accession: "x",
-          url: "https://example.com",
-        },
-      ],
+      ...activity([]),
+      majorHolders: {
+        ...NO_HOLDERS,
+        netPercentChange: 2.4,
+        increases: [
+          {
+            reportingPerson: "BIG FUND",
+            deltaPercent: 2.4,
+            from: 0,
+            to: 2.4,
+            basis: "new-position",
+            latestFiledAt: "2026-08-01",
+          },
+        ],
+        consideredCount: 1,
+      },
     });
 
-    assert.equal(summary.hasSignal, true);
-    assert.equal(summary.majorHolderFilingCount, 1);
+    assert.equal(summary.netAccumulation, true);
+    assert.equal(summary.netHolderPercentChange, 2.4);
+    assert.equal(summary.holdersIncreasing, 1);
+  });
+
+  test("a fund exiting is not accumulation", () => {
+    const summary = summariseInsiderActivity({
+      ...activity([]),
+      majorHolders: {
+        ...NO_HOLDERS,
+        netPercentChange: -6.1,
+        decreases: [
+          {
+            reportingPerson: "BIG FUND",
+            deltaPercent: -6.1,
+            from: 6.1,
+            to: 0,
+            basis: "exit",
+            latestFiledAt: "2026-08-01",
+          },
+        ],
+        consideredCount: 1,
+      },
+    });
+
+    assert.equal(summary.netAccumulation, false);
+    assert.equal(summary.holdersDecreasing, 1);
   });
 });

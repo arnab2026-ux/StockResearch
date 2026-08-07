@@ -26,7 +26,7 @@ export const WEIGHTS = {
 export type FactorName = keyof typeof WEIGHTS;
 
 export const FACTOR_LABELS: Record<FactorName, string> = {
-  insider: "Insider / major investor buying",
+  insider: "Net insider / fund accumulation",
   surprise: "Earnings surprise strength",
   fcfYield: "Free cash flow yield",
   sentiment: "Analyst sentiment",
@@ -96,6 +96,17 @@ export function composite(factors: Factors): CompositeScore {
 // Factor normalisation
 // ---------------------------------------------------------------------------
 
+/**
+ * Thousands-separated USD, pinned to en-US.
+ *
+ * Bare `toLocaleString()` follows the host locale, which produced Indian lakh
+ * grouping ("2,50,000") on the development machine. Dollar figures must render
+ * the same way wherever the screen runs.
+ */
+export function formatUsd(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
 /** Maps a value onto 0-100 by linear interpolation, clamped at both ends. */
 export function scale(value: number, min: number, max: number): number {
   if (max === min) return 50;
@@ -103,46 +114,61 @@ export function scale(value: number, min: number, max: number): number {
 }
 
 /**
- * Insider score, 0-100.
+ * Net accumulation score, 0-100.
  *
- * Breadth is weighted above size: several insiders buying independently is
- * stronger evidence than one large purchase, which may reflect a single
- * person's liquidity rather than a shared view. A 13D/G filing contributes a
- * fixed increment because a new >5% holder is a discrete event with no
- * natural magnitude scale.
+ * Measures whether insiders and 5%+ holders were net buyers over the window,
+ * not merely whether they were active. Selling insiders and exiting funds push
+ * the score below the neutral midpoint, which a presence-of-activity measure
+ * cannot express: a fund cutting its stake and a fund building one both look
+ * like "a 13D/G filing" until the direction is read.
+ *
+ * 50 is neutral — no net movement either way. Three components:
+ *
+ * - **Insider dollar flow** (45%): purchases less sales, in dollars.
+ * - **Institutional stake change** (40%): net percentage points of the class
+ *   added by 5%+ holders. Percentage points are the natural unit here, since
+ *   a 2-point move means the same thing regardless of company size.
+ * - **Breadth** (15%): distinct buyers net of distinct sellers. Several
+ *   insiders acting independently is stronger than one person's large trade.
  */
-export function insiderScore(input: {
-  buyCount: number;
+export function netAccumulationScore(input: {
+  netInsiderValue: number;
   distinctBuyers: number;
-  buyValue: number;
-  sellValue: number;
-  majorHolderFilings: number;
+  distinctSellers: number;
+  netHolderPercentChange: number;
+  holdersIncreasing: number;
+  holdersDecreasing: number;
+  windowDays: number;
 }): { score: number; detail: string } {
-  if (
-    input.buyCount === 0 &&
-    input.majorHolderFilings === 0
-  ) {
-    return { score: 0, detail: "no open-market purchases or 13D/G filings in window" };
-  }
+  const NEUTRAL = 50;
 
-  const breadth = scale(input.distinctBuyers, 0, 4) * 0.5;
-  const size = scale(input.buyValue, 0, 2_000_000) * 0.3;
-  const holders = scale(input.majorHolderFilings, 0, 3) * 0.2;
+  const flow = scale(input.netInsiderValue, -2_000_000, 2_000_000);
+  const stake = scale(input.netHolderPercentChange, -4, 4);
+  const breadth = scale(input.distinctBuyers - input.distinctSellers, -3, 3);
 
-  let score = breadth + size + holders;
+  const score = flow * 0.45 + stake * 0.4 + breadth * 0.15;
 
-  // Net selling against the purchases tempers, but does not erase, the signal.
-  if (input.sellValue > input.buyValue && input.buyValue > 0) {
-    score *= 0.6;
-  }
+  const noEvidence =
+    input.netInsiderValue === 0 &&
+    input.netHolderPercentChange === 0 &&
+    input.distinctBuyers === 0 &&
+    input.distinctSellers === 0;
 
-  const parts = [
-    `${input.buyCount} open-market buy(s) by ${input.distinctBuyers} insider(s)`,
-    `$${Math.round(input.buyValue).toLocaleString()} bought`,
-    `${input.majorHolderFilings} 13D/G filing(s)`,
-  ];
+  const dollars = (n: number): string =>
+    `${n < 0 ? "-" : "+"}$${formatUsd(Math.abs(Math.round(n)))}`;
 
-  return { score, detail: parts.join(", ") };
+  const detail = noEvidence
+    ? `no insider trades or 5%+ holder changes in ${input.windowDays}d`
+    : [
+        `insider net ${dollars(input.netInsiderValue)}`,
+        `${input.distinctBuyers} buyer(s) / ${input.distinctSellers} seller(s)`,
+        `5%+ holders net ${input.netHolderPercentChange >= 0 ? "+" : ""}${input.netHolderPercentChange.toFixed(2)}pp ` +
+          `(${input.holdersIncreasing} up, ${input.holdersDecreasing} down)`,
+      ].join(", ");
+
+  // With nothing on either side the honest reading is neutral, not zero: an
+  // absence of trading is not evidence of distribution.
+  return { score: noEvidence ? NEUTRAL : score, detail };
 }
 
 /**

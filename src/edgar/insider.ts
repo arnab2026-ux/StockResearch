@@ -19,6 +19,11 @@ import { XMLParser } from "fast-xml-parser";
 
 import { cached } from "../lib/cache.js";
 import { NotFoundError, secFetchJson, secFetchText } from "../lib/http.js";
+import {
+  fetchMajorHolderFilings,
+  summariseMajorHolders,
+  type MajorHolderSummary,
+} from "./majorHolders.js";
 
 const DAY_MS = 86_400_000;
 
@@ -60,20 +65,13 @@ export interface InsiderTransaction {
   url: string;
 }
 
-export interface MajorHolderFiling {
-  form: string;
-  filedAt: string;
-  accession: string;
-  url: string;
-}
-
 export interface InsiderActivity {
   cik: string;
   windowDays: number;
   since: string;
   transactions: InsiderTransaction[];
-  /** Schedule 13D/13G filings — new or amended >5% positions. */
-  majorHolderFilings: MajorHolderFiling[];
+  /** Net 5%+ holder movement, with filings by this company already removed. */
+  majorHolders: MajorHolderSummary;
   /** Form 4s we saw but could not parse, so gaps are visible not silent. */
   parseFailures: { accession: string; reason: string }[];
 }
@@ -218,7 +216,7 @@ export async function fetchInsiderActivity(
   cik: string,
   opts: FetchInsiderOptions = {},
 ): Promise<InsiderActivity> {
-  const { windowDays = 14, refresh = false, maxDocuments = 40 } = opts;
+  const { windowDays = 90, refresh = false, maxDocuments = 80 } = opts;
 
   const { value: submissions } = await cached<SubmissionsResponse>(
     `submissions_CIK${cik}`,
@@ -230,7 +228,6 @@ export async function fetchInsiderActivity(
   const since = new Date(Date.now() - windowDays * DAY_MS).toISOString().slice(0, 10);
 
   const transactions: InsiderTransaction[] = [];
-  const majorHolderFilings: MajorHolderFiling[] = [];
   const parseFailures: { accession: string; reason: string }[] = [];
 
   let fetched = 0;
@@ -245,15 +242,10 @@ export async function fetchInsiderActivity(
     // The feed is newest-first, so the first out-of-window entry ends the scan.
     if (filedAt < since) break;
 
-    if (isMajorHolderForm(form)) {
-      majorHolderFilings.push({
-        form,
-        filedAt,
-        accession,
-        url: archiveUrl(cik, accession, primaryDocument ?? ""),
-      });
-      continue;
-    }
+    // 13D/G documents are fetched separately so each can be checked against
+    // the issuer CIK — the submissions feed also carries filings where this
+    // company is the investor rather than the subject.
+    if (isMajorHolderForm(form)) continue;
 
     if (form !== "4") continue;
     if (fetched >= maxDocuments) {
@@ -275,7 +267,24 @@ export async function fetchInsiderActivity(
     }
   }
 
-  return { cik, windowDays, since, transactions, majorHolderFilings, parseFailures };
+  const { filings, failures } = await fetchMajorHolderFilings(cik, recent, {
+    windowDays,
+  });
+  if (failures > 0) {
+    parseFailures.push({
+      accession: "13D/G",
+      reason: `${failures} schedule filing(s) could not be parsed`,
+    });
+  }
+
+  return {
+    cik,
+    windowDays,
+    since,
+    transactions,
+    majorHolders: summariseMajorHolders(filings, cik),
+    parseFailures,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -283,6 +292,7 @@ export async function fetchInsiderActivity(
 // ---------------------------------------------------------------------------
 
 export interface InsiderSummary {
+  windowDays: number;
   /** Open-market purchases only (code P). */
   buyCount: number;
   buyValue: number;
@@ -291,12 +301,27 @@ export interface InsiderSummary {
   sellValue: number;
   /** Distinct insiders making open-market purchases. Breadth beats size. */
   distinctBuyers: number;
-  /** Net conviction flow: buy value less sell value. */
+  distinctSellers: number;
+  /** Net insider dollar flow: purchases less sales. Can be negative. */
   netValue: number;
   /** Grants, exercises and withholdings seen but deliberately excluded. */
   excludedCount: number;
-  majorHolderFilingCount: number;
-  hasSignal: boolean;
+
+  /** Net percentage points of the class added by 5%+ holders. Can be negative. */
+  netHolderPercentChange: number;
+  holdersIncreasing: number;
+  holdersDecreasing: number;
+  /** Amendments whose prior level was outside the window. */
+  holdersIndeterminate: number;
+  /** 13D/G filings discarded because this company was the filer. */
+  filedByCompanyCount: number;
+
+  /**
+   * True when the net flow is positive on either measure. Note this is
+   * accumulation, not merely activity: selling insiders and exiting funds
+   * push it false.
+   */
+  netAccumulation: boolean;
 }
 
 export function summariseInsiderActivity(activity: InsiderActivity): InsiderSummary {
@@ -310,16 +335,24 @@ export function summariseInsiderActivity(activity: InsiderActivity): InsiderSumm
 
   const buyValue = buys.reduce((sum, t) => sum + t.value, 0);
   const sellValue = sells.reduce((sum, t) => sum + t.value, 0);
+  const netValue = buyValue - sellValue;
+  const holders = activity.majorHolders;
 
   return {
+    windowDays: activity.windowDays,
     buyCount: buys.length,
     buyValue,
     sellCount: sells.length,
     sellValue,
     distinctBuyers: new Set(buys.map((t) => t.ownerName)).size,
-    netValue: buyValue - sellValue,
+    distinctSellers: new Set(sells.map((t) => t.ownerName)).size,
+    netValue,
     excludedCount: excluded.length,
-    majorHolderFilingCount: activity.majorHolderFilings.length,
-    hasSignal: buys.length > 0 || activity.majorHolderFilings.length > 0,
+    netHolderPercentChange: holders.netPercentChange,
+    holdersIncreasing: holders.increases.length,
+    holdersDecreasing: holders.decreases.length,
+    holdersIndeterminate: holders.indeterminate.length,
+    filedByCompanyCount: holders.filedByCompanyCount,
+    netAccumulation: netValue > 0 || holders.netPercentChange > 0,
   };
 }

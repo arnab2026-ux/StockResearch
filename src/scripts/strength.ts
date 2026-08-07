@@ -28,8 +28,8 @@ import { cite, isVerified, valueOf } from "../lib/provenance.js";
 import { computeRatios, snapshotAt, ttmFreeCashFlow } from "../metrics/fundamentals.js";
 import { strengthProfile } from "../metrics/strength.js";
 
-/** The brief specifies a 14-day lookback; `--window N` overrides it. */
-const DEFAULT_INSIDER_WINDOW_DAYS = 14;
+/** Ownership lookback; `--window=N` overrides it. */
+const DEFAULT_INSIDER_WINDOW_DAYS = 90;
 
 interface Row {
   ticker: string;
@@ -112,7 +112,11 @@ async function detail(row: Row, windowDays: number): Promise<void> {
     console.log(`    open-market sells  ${i.sellCount}, ${money(i.sellValue, "USD")}`);
     console.log(`    net                ${money(i.netValue, "USD")}`);
     console.log(`    excluded           ${i.excludedCount} grant/exercise/withholding/gift events`);
-    console.log(`    13D/G filings      ${i.majorHolderFilingCount}`);
+    console.log(`    5%+ holders        ${i.netHolderPercentChange >= 0 ? "+" : ""}${i.netHolderPercentChange.toFixed(2)}pp net ` +
+      `(${i.holdersIncreasing} up, ${i.holdersDecreasing} down, ${i.holdersIndeterminate} indeterminate)`);
+    if (i.filedByCompanyCount > 0) {
+      console.log(`    excluded 13D/G     ${i.filedByCompanyCount} filed by this company about others`);
+    }
   }
 
   if (profile.caveats.length) {
@@ -197,7 +201,7 @@ async function main(): Promise<void> {
     console.log(
       `${"TICKER".padEnd(7)}${"FCF (TTM)".padEnd(13)}${"BASIS".padEnd(7)}` +
         `${"FCF MGN".padEnd(9)}${"F".padEnd(6)}${"Z''".padEnd(10)}` +
-        `${"INSIDER BUY".padEnd(13)}${"13D/G".padEnd(7)}`,
+        `${"INSIDER NET".padEnd(13)}${"HLDRpp".padEnd(7)}`,
     );
 
     for (const row of list.sort((a, b) => a.ticker.localeCompare(b.ticker))) {
@@ -212,8 +216,8 @@ async function main(): Promise<void> {
         : "—";
 
       const buy = row.insider
-        ? row.insider.buyCount > 0
-          ? `${row.insider.buyCount}× ${money(row.insider.buyValue)}`
+        ? row.insider.netValue !== 0
+          ? money(row.insider.netValue)
           : "—"
         : "n/a";
 
@@ -225,7 +229,10 @@ async function main(): Promise<void> {
           `${profile.fScore.score}/${profile.fScore.available}`.padEnd(6) +
           zText.padEnd(10) +
           buy.padEnd(13) +
-          String(row.insider?.majorHolderFilingCount ?? "n/a").padEnd(7),
+          (row.insider
+            ? `${row.insider.netHolderPercentChange >= 0 ? "+" : ""}${row.insider.netHolderPercentChange.toFixed(1)}`
+            : "n/a"
+          ).padEnd(7),
       );
     }
   }
@@ -235,7 +242,7 @@ async function main(): Promise<void> {
     (r) => (valueOf(ttmFreeCashFlow(r.company).amount) ?? 0) > 0,
   );
   const ttmBasis = rows.filter((r) => ttmFreeCashFlow(r.company).basis === "ttm");
-  const insiderSignal = rows.filter((r) => r.insider?.hasSignal);
+  const insiderSignal = rows.filter((r) => r.insider?.netAccumulation);
 
   console.log(`\n\n── Summary ${"─".repeat(60)}`);
   console.log(`  companies              ${rows.length}`);
@@ -243,13 +250,13 @@ async function main(): Promise<void> {
   console.log(`  FCF positive           ${positiveFcf.length}`);
   console.log(`  true TTM basis         ${ttmBasis.length} (rest fall back to fiscal year)`);
   if (!skipInsider) {
-    console.log(`  insider or 13D/G signal ${insiderSignal.length} (window: ${windowDays}d)`);
+    console.log(`  net accumulation       ${insiderSignal.length} (window: ${windowDays}d)`);
     for (const r of insiderSignal) {
       const i = r.insider;
       if (!i) continue;
       console.log(
-        `    ${r.ticker.padEnd(7)} ${i.buyCount} buy(s) ${money(i.buyValue)}` +
-          `, ${i.majorHolderFilingCount} 13D/G`,
+        `    ${r.ticker.padEnd(7)} insider net ${money(i.netValue)}` +
+          `, 5%+ holders ${i.netHolderPercentChange >= 0 ? "+" : ""}${i.netHolderPercentChange.toFixed(2)}pp`,
       );
     }
   }

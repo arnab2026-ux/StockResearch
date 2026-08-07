@@ -76,11 +76,16 @@ news — never for quotes.
 
 ## The screening brief
 
-`npm run screen` (planned) implements a fixed framework the user specified.
-Weights: insider/major-investor buying 30%, earnings surprise 25%, FCF yield
-25%, analyst sentiment 20%. Filters: activity in last 14 days, positive TTM
+`npm run screen` implements a fixed framework the user specified. Weights:
+net insider/fund accumulation 30%, earnings surprise 25%, FCF yield 25%,
+analyst sentiment 20%. Filters: net accumulation over 90 days, positive TTM
 FCF or guidance turning positive, market cap > $1000M, P/E below sector
 average, positive surprise in last two quarters.
+
+The ownership factor measures **net direction over 90 days, not activity**.
+A 14-day window found nothing across the entire universe; 90 days also lets
+13D/G amendments land. Selling insiders and exiting funds score below the
+neutral midpoint of 50; a quiet window scores exactly 50.
 
 Two rules are absolute:
 
@@ -112,6 +117,16 @@ Do not "simplify" them away:
 
 Non-USD and IFRS filers exist in the universe (ASML reports US-GAAP in EUR;
 GFS files IFRS). Currency and taxonomy are detected per company.
+
+## Schedule 13D/G — two traps
+
+1. **A company's submissions feed contains filings where it is the filer, not
+   the subject.** NVIDIA's feed carries its own 13Gs on CoreWeave and Nebius —
+   2 of 5 recent filings. Counting those as "an investor bought NVIDIA"
+   inverts the signal. Always check `issuerCik` against the company.
+2. **An amendment reporting `classPercent` 0 is an exit.** Vanguard's March
+   2026 amendment on NVDA reports zero: the stake fell below the threshold.
+   Treating any 13D/G as bullish counts a large holder leaving as arriving.
 
 ## Form 4 — only code P is a buy
 

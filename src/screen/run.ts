@@ -42,14 +42,20 @@ import { fetchTipRanks } from "../providers/tipranks.js";
 import {
   composite,
   fcfYieldScore,
-  insiderScore,
+  formatUsd,
+  netAccumulationScore,
   sentimentScore,
   surpriseScore,
   type CompositeScore,
   type Factors,
 } from "./score.js";
 
-export const INSIDER_WINDOW_DAYS = 14;
+/**
+ * Ownership lookback. Long enough for Schedule 13D/G amendments to land and
+ * for a fund's accumulation to become visible; a two-week window showed no
+ * activity at all across the whole universe.
+ */
+export const INSIDER_WINDOW_DAYS = 90;
 export const MIN_MARKET_CAP = 1_000_000_000;
 
 export interface FilterResult {
@@ -242,12 +248,14 @@ function buildInsiderFactor(
     };
   }
 
-  const { score, detail } = insiderScore({
-    buyCount: insider.buyCount,
+  const { score, detail } = netAccumulationScore({
+    netInsiderValue: insider.netValue,
     distinctBuyers: insider.distinctBuyers,
-    buyValue: insider.buyValue,
-    sellValue: insider.sellValue,
-    majorHolderFilings: insider.majorHolderFilingCount,
+    distinctSellers: insider.distinctSellers,
+    netHolderPercentChange: insider.netHolderPercentChange,
+    holdersIncreasing: insider.holdersIncreasing,
+    holdersDecreasing: insider.holdersDecreasing,
+    windowDays,
   });
 
   return {
@@ -368,16 +376,23 @@ export function applyFilters(
 ): FilterResult[] {
   const results: FilterResult[] = [];
 
-  // 1. Insider or major-investor activity in the window.
+  // 1. Net accumulation by insiders or 5%+ holders over the window.
+  const window = c.insider?.windowDays ?? INSIDER_WINDOW_DAYS;
   results.push(
     c.insider
       ? {
-          name: `Insider/major-investor activity (${INSIDER_WINDOW_DAYS}d)`,
-          passed: c.insider.hasSignal,
-          detail: `${c.insider.buyCount} open-market buy(s), ${c.insider.majorHolderFilingCount} 13D/G`,
+          name: `Net insider/fund accumulation (${window}d)`,
+          passed: c.insider.netAccumulation,
+          detail:
+            `insider net $${formatUsd(Math.round(c.insider.netValue))}, ` +
+            `5%+ holders ${c.insider.netHolderPercentChange >= 0 ? "+" : ""}` +
+            `${c.insider.netHolderPercentChange.toFixed(2)}pp` +
+            (c.insider.holdersIndeterminate > 0
+              ? ` (${c.insider.holdersIndeterminate} indeterminate)`
+              : ""),
         }
       : {
-          name: `Insider/major-investor activity (${INSIDER_WINDOW_DAYS}d)`,
+          name: `Net insider/fund accumulation (${window}d)`,
           passed: undefined,
           detail: "UNVERIFIED — EDGAR feed unavailable",
         },
@@ -507,8 +522,15 @@ export function describe(c: ScreenedCompany): { thesis: string; topRisk: string 
     bits.push(`${beats}/4 quarters above consensus`);
   }
 
-  if (c.insider?.hasSignal) {
-    bits.push(`${c.insider.buyCount} insider buy(s), ${c.insider.majorHolderFilingCount} 13D/G`);
+  if (c.insider?.netAccumulation) {
+    const parts: string[] = [];
+    if (c.insider.netValue > 0) {
+      parts.push(`insiders net +$${formatUsd(Math.round(c.insider.netValue))}`);
+    }
+    if (c.insider.netHolderPercentChange > 0) {
+      parts.push(`5%+ holders +${c.insider.netHolderPercentChange.toFixed(1)}pp`);
+    }
+    if (parts.length) bits.push(parts.join(" and "));
   }
 
   if (strongest) bits.push(`strongest factor ${strongest.factor}`);

@@ -5,7 +5,7 @@ import { sourced, unverified, type Sourced } from "../lib/provenance.js";
 import {
   composite,
   fcfYieldScore,
-  insiderScore,
+  netAccumulationScore,
   scale,
   sentimentScore,
   surpriseScore,
@@ -132,64 +132,101 @@ describe("scale", () => {
   });
 });
 
-describe("insider score", () => {
-  test("no activity scores zero", () => {
-    const r = insiderScore({
-      buyCount: 0,
-      distinctBuyers: 0,
-      buyValue: 0,
-      sellValue: 0,
-      majorHolderFilings: 0,
-    });
+describe("net accumulation score", () => {
+  const QUIET = {
+    netInsiderValue: 0,
+    distinctBuyers: 0,
+    distinctSellers: 0,
+    netHolderPercentChange: 0,
+    holdersIncreasing: 0,
+    holdersDecreasing: 0,
+    windowDays: 90,
+  };
 
-    assert.equal(r.score, 0);
+  test("no activity at all is neutral, not zero", () => {
+    // An absence of trading is not evidence of distribution.
+    const r = netAccumulationScore(QUIET);
+    assert.equal(r.score, 50);
+    assert.match(r.detail, /no insider trades/);
   });
 
-  test("breadth outweighs a single large purchase", () => {
-    const broad = insiderScore({
-      buyCount: 4,
-      distinctBuyers: 4,
-      buyValue: 400_000,
-      sellValue: 0,
-      majorHolderFilings: 0,
+  test("net buying scores above neutral, net selling below", () => {
+    const buying = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 1_500_000,
+      distinctBuyers: 3,
     });
-    const concentrated = insiderScore({
-      buyCount: 1,
-      distinctBuyers: 1,
-      buyValue: 2_000_000,
-      sellValue: 0,
-      majorHolderFilings: 0,
+    const selling = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: -1_500_000,
+      distinctSellers: 3,
+    });
+
+    assert.ok(buying.score > 50, `buying scored ${buying.score}`);
+    assert.ok(selling.score < 50, `selling scored ${selling.score}`);
+  });
+
+  test("a fund exiting scores below a fund entering", () => {
+    const entering = netAccumulationScore({
+      ...QUIET,
+      netHolderPercentChange: 3,
+      holdersIncreasing: 1,
+    });
+    const exiting = netAccumulationScore({
+      ...QUIET,
+      netHolderPercentChange: -3,
+      holdersDecreasing: 1,
     });
 
     assert.ok(
-      broad.score > concentrated.score,
-      `broad ${broad.score} should beat concentrated ${concentrated.score}`,
+      exiting.score < entering.score,
+      `exit ${exiting.score} should be below entry ${entering.score}`,
     );
   });
 
-  test("heavy net selling tempers the score", () => {
-    const base = {
-      buyCount: 2,
-      distinctBuyers: 2,
-      buyValue: 500_000,
-      majorHolderFilings: 0,
-    };
-    const clean = insiderScore({ ...base, sellValue: 0 });
-    const offset = insiderScore({ ...base, sellValue: 5_000_000 });
-
-    assert.ok(offset.score < clean.score);
-  });
-
-  test("13D/G filings alone produce a signal", () => {
-    const r = insiderScore({
-      buyCount: 0,
-      distinctBuyers: 0,
-      buyValue: 0,
-      sellValue: 0,
-      majorHolderFilings: 2,
+  test("insider buying is offset by a large fund exit", () => {
+    const mixed = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 500_000,
+      distinctBuyers: 1,
+      netHolderPercentChange: -4,
+      holdersDecreasing: 2,
+    });
+    const clean = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 500_000,
+      distinctBuyers: 1,
     });
 
-    assert.ok(r.score > 0);
+    assert.ok(mixed.score < clean.score);
+  });
+
+  test("breadth of buyers lifts the score at equal dollar value", () => {
+    const broad = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 400_000,
+      distinctBuyers: 3,
+    });
+    const single = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 400_000,
+      distinctBuyers: 1,
+    });
+
+    assert.ok(broad.score > single.score);
+  });
+
+  test("detail names both measures when active", () => {
+    const r = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: 250_000,
+      distinctBuyers: 2,
+      netHolderPercentChange: 1.5,
+      holdersIncreasing: 1,
+    });
+
+    assert.match(r.detail, /insider net \+\$250,000/);
+    assert.match(r.detail, /5%\+ holders net \+1\.50pp/);
   });
 });
 

@@ -20,7 +20,7 @@ Useful variants:
 | --- | --- |
 | `npm run screen -- NVDA AMD` | Specific tickers, full detail each |
 | `npm run screen -- --all` | Detail for every company, not just qualifiers |
-| `npm run screen -- --window=90` | Widen the insider lookback from 14 days |
+| `npm run screen -- --window=120` | Widen the ownership lookback from 90 days |
 | `npm run screen -- --refresh` | Bypass all caches and refetch |
 
 A full run takes several minutes: it makes roughly 200 rate-limited requests
@@ -30,7 +30,7 @@ and is deliberately throttled. Do not parallelise it or remove the throttles.
 
 Screening filters:
 
-1. Insider buying or major fund/investor activity in the last 14 days
+1. **Net** accumulation by insiders or 5%+ holders over a 90-day window
 2. Positive trailing-twelve-month free cash flow, or guidance turning positive
 3. Market cap above $1000M
 4. Price-to-earnings below the sector average
@@ -40,10 +40,15 @@ Scoring weights, fixed:
 
 | Factor | Weight |
 | --- | --- |
-| Insider or major investor buying | 30% |
+| Net insider / fund accumulation | 30% |
 | Earnings surprise strength | 25% |
 | Free cash flow yield | 25% |
 | Analyst sentiment | 20% |
+
+The ownership factor measures **direction, not activity**. Insiders selling
+and funds cutting stakes push it below the neutral midpoint of 50. A quiet
+window with no trades on either side scores 50, because an absence of trading
+is not evidence of distribution.
 
 Per company the report gives: name and ticker, composite score 0–100,
 one-line thesis, top risk, and current price against estimated intrinsic
@@ -85,10 +90,15 @@ value.
   403; that is bot detection and must not be worked around.
 - **Guidance-based FCF turnaround is not implemented.** Filter 2 tests
   reported FCF only.
-- **13F institutional holdings cannot support a 14-day window** — they are
-  quarterly with a 45-day lag. Only Form 4 and Schedule 13D/G do.
+- **13F institutional holdings are not ingested.** They are indexed by the
+  filing fund, not by the stock, so finding who added a given ticker means
+  parsing every fund's 13F or the SEC's bulk quarterly dataset. The 5%+ holder
+  signal comes from Schedule 13D/G, which is issuer-indexed.
 - **Only Form 4 transaction code `P` counts as insider buying.** Grants,
   option exercises, tax withholding, and gifts are compensation mechanics.
+- **A lone 13D/G amendment is indeterminate.** Its prior level lies outside
+  the window, so no delta is claimed; the count appears in the filter detail.
+  Widening `--window` converts some of these into real deltas.
 
 ## After running
 
