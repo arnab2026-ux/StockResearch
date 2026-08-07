@@ -8,6 +8,7 @@
     "smoke": "tsx src/smoke.ts",
     "ingest": "tsx src/scripts/ingest.ts",
     "strength": "tsx src/scripts/strength.ts",
+    "screen": "tsx src/scripts/screen.ts",
     "test": "tsx --test \"src/**/*.test.ts\""
   },
   "repository": {
