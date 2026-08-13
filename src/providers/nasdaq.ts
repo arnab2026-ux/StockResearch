@@ -206,6 +206,87 @@ export async function fetchEarningsSurprises(
 }
 
 // ---------------------------------------------------------------------------
+// Forward EPS estimates
+// ---------------------------------------------------------------------------
+
+interface ForecastRow {
+  /** Fiscal year end as published, e.g. "Jan 2027". */
+  fiscalEnd: string;
+  consensusEPSForecast: number | string | null;
+}
+
+interface ForecastData {
+  symbol: string;
+  yearlyForecast: { rows: ForecastRow[] | null } | null;
+}
+
+export interface EpsForecast {
+  /** As published, e.g. "Jan 2027". */
+  fiscalEnd: string;
+  /** Calendar year the fiscal year ends in — the ordering key. */
+  year: number;
+  consensusEps: number;
+}
+
+const FORECAST_TTL_HOURS = 24;
+
+/**
+ * Nasdaq returns these as JSON numbers for most tickers but occasionally as
+ * accounting-style strings, where a loss is parenthesised rather than signed.
+ * Silently dropping a row that fails to parse would remove a loss-making year
+ * from the series and leave a growth rate computed across the gap — so the
+ * parenthesised form is normalised rather than skipped.
+ */
+function parseForecastEps(raw: unknown): number | undefined {
+  if (typeof raw === "string") {
+    const negated = /^\(\s*(.+?)\s*\)$/.exec(raw.trim());
+    if (negated) {
+      const inner = parseLooseNumber(negated[1]);
+      return inner === undefined ? undefined : -inner;
+    }
+  }
+  return parseLooseNumber(raw);
+}
+
+/**
+ * Consensus EPS estimates for the coming fiscal years.
+ *
+ * These are the forward half of the PEG ratio. Nasdaq publishes the rows
+ * ascending by fiscal year, but the order is not relied on: a reversed feed
+ * would invert every growth rate without failing, so the fiscal year is parsed
+ * out and the series sorted explicitly.
+ */
+export async function fetchEpsForecasts(
+  ticker: string,
+  refresh?: boolean,
+): Promise<Sourced<EpsForecast[]>> {
+  const path = `/analyst/${ticker}/earnings-forecast`;
+  const data = await get<ForecastData>(path, FORECAST_TTL_HOURS, refresh);
+  const rows = data.yearlyForecast?.rows ?? [];
+
+  const parsed: EpsForecast[] = [];
+
+  for (const row of rows) {
+    const eps = parseForecastEps(row.consensusEPSForecast);
+    const year = /(\d{4})/.exec(row.fiscalEnd ?? "")?.[1];
+
+    // A row with no consensus figure, or none we can place in the series, is
+    // dropped rather than interpolated from its neighbours.
+    if (eps === undefined || !year) continue;
+
+    parsed.push({ fiscalEnd: row.fiscalEnd, year: Number(year), consensusEps: eps });
+  }
+
+  if (parsed.length === 0) {
+    return unverified("Nasdaq published no yearly EPS consensus forecast");
+  }
+
+  parsed.sort((a, b) => a.year - b.year);
+
+  return sourced(parsed, webSource("Nasdaq EPS consensus forecast", nasdaqUrl(path)));
+}
+
+// ---------------------------------------------------------------------------
 // Analyst ratings
 // ---------------------------------------------------------------------------
 

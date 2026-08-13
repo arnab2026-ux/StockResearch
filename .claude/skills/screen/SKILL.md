@@ -24,7 +24,7 @@ Useful variants:
 | `npm run screen -- --refresh` | Bypass all caches and refetch |
 | `npm run screen -- --no-vault` | Skip writing to the Obsidian vault |
 
-A full run takes several minutes: it makes roughly 200 rate-limited requests
+A full run takes several minutes: it makes roughly 250 rate-limited requests
 and is deliberately throttled. Do not parallelise it or remove the throttles.
 
 ## The framework
@@ -41,15 +41,22 @@ Scoring weights, fixed:
 
 | Factor | Weight |
 | --- | --- |
-| Net insider / fund accumulation | 30% |
+| Net insider / fund accumulation | 20% |
 | Earnings surprise strength | 25% |
 | Free cash flow yield | 25% |
 | Analyst sentiment | 20% |
+| PEG ratio | 10% |
 
 The ownership factor measures **direction, not activity**. Insiders selling
 and funds cutting stakes push it below the neutral midpoint of 50. A quiet
 window with no trades on either side scores 50, because an absence of trading
 is not evidence of distribution.
+
+The PEG factor is **inverted** — it is the only one where lower is better. It
+is trailing P/E divided by the forward consensus EPS growth rate, so it asks
+what the multiple costs per point of growth. It is UNVERIFIED rather than
+scored whenever that question has no meaning: a negative P/E, a loss anywhere
+in the growth span, or growth that is not positive.
 
 Per company the report gives: name and ticker, composite score 0–100,
 one-line thesis, top risk, and current price against estimated intrinsic
@@ -106,6 +113,22 @@ value.
 - **A lone 13D/G amendment is indeterminate.** Its prior level lies outside
   the window, so no delta is claimed; the count appears in the filter detail.
   Widening `--window` converts some of these into real deltas.
+- **PEG is UNVERIFIED for 13 of 51 companies**, almost all loss-making and so
+  carrying a negative trailing P/E. Those companies rescale to 90% coverage.
+- **17 of the 38 verified PEGs sit on the floor at exactly 0**, because the
+  scoring band runs 0.75–3.0. For nearly half the covered universe the factor
+  therefore contributes a constant: GOOGL at 5.34, MCHP at 5.28, DDOG at 6.10
+  and SWKS at 7.35 are indistinguishable in score.
+- **The growth base and the P/E base are disconnected.** Growth compounds from
+  the first forecast year; the P/E is trailing. A forecast earnings collapse
+  could in principle produce a flatteringly low PEG. Not currently live — the
+  lowest forecast-year-1 to trailing-EPS ratio in the universe is ACLS at 0.82
+  — but NTRA, at +5900%/yr growth off a 0.03 base, is held out only by its
+  negative trailing P/E today.
+- **GOOGL's consensus hides a 28% EPS drop for Dec 2027** (20.51 → 14.74 →
+  17.73 → 22.58), rendered by the endpoints as +3.3%/yr. The trough is now
+  named in the report, but that figure has not been checked against a second
+  source.
 
 ## The Obsidian vault
 

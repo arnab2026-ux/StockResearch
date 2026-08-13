@@ -84,6 +84,10 @@ function renderCompany(c: ScreenedCompany): void {
   console.log(`    Market cap         ${cite(c.marketCap, (v) => money(v))}`);
   console.log(`    P/E (TTM)          ${cite(c.peRatio, (v) => v.toFixed(1))}`);
   console.log(`    TTM EPS            ${cite(c.ttmEps, (v) => v.toFixed(2))}`);
+  console.log(`    PEG                ${cite(c.peg, (v) => v.toFixed(2))}`);
+  console.log(
+    `    Consensus EPS CAGR ${cite(c.epsGrowth, (g) => `${g.percentPerYear >= 0 ? "+" : ""}${g.percentPerYear.toFixed(1)}%/yr over ${g.years}y (${g.fromFiscalEnd} → ${g.toFiscalEnd})`)}`,
+  );
   console.log(
     `    Free cash flow     ${cite(c.fcf, (v) => money(v, c.currency))} (${c.fcfBasis.toUpperCase()} basis)`,
   );
@@ -138,7 +142,8 @@ async function main(): Promise<void> {
   console.log(`Stock screen — ${runAt} UTC`);
   console.log(`Universe: ${entries.length} companies · insider window ${insiderWindowDays}d`);
   console.log(`Sources: SEC EDGAR (fundamentals, Form 4, 13D/G), Nasdaq (quote,`);
-  console.log(`earnings surprise), TipRanks (analyst consensus and track records).\n`);
+  console.log(`earnings surprise, EPS consensus forecast), TipRanks (analyst`);
+  console.log(`consensus and track records).\n`);
 
   const byTicker = new Map(entries.map((e) => [e.ticker, e]));
   const { resolved, unresolved } = await resolveTickers(entries.map((e) => e.ticker));
@@ -190,7 +195,8 @@ async function main(): Promise<void> {
   console.log(`\n\n── Ranked watchlist ${"─".repeat(57)}`);
   console.log(
     `${"#".padEnd(4)}${"TICKER".padEnd(8)}${"SCORE".padEnd(8)}${"COV".padEnd(6)}` +
-      `${"P/E".padEnd(8)}${"FCF YLD".padEnd(10)}${"UPSIDE".padEnd(9)}${"FILTERS".padEnd(9)}`,
+      `${"P/E".padEnd(8)}${"PEG".padEnd(7)}${"FCF YLD".padEnd(10)}${"UPSIDE".padEnd(9)}` +
+      `${"FILTERS".padEnd(9)}`,
   );
 
   for (const [i, c] of ranked.entries()) {
@@ -202,6 +208,7 @@ async function main(): Promise<void> {
         (c.score.value === undefined ? "—" : c.score.value.toFixed(1)).padEnd(8) +
         `${(c.score.coverage * 100).toFixed(0)}%`.padEnd(6) +
         (valueOf(c.peRatio)?.toFixed(1) ?? "—").padEnd(8) +
+        (valueOf(c.peg)?.toFixed(2) ?? "—").padEnd(7) +
         (valueOf(c.fcfYield) === undefined
           ? "—"
           : pct(valueOf(c.fcfYield), 2)

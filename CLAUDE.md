@@ -64,7 +64,7 @@ no terms-of-service risk.
 | Input | Source | Status |
 | --- | --- | --- |
 | Financials, financial strength | SEC EDGAR XBRL `companyfacts` | Built |
-| Insider buying (30% of score) | SEC EDGAR Form 4 | Built |
+| Insider buying (20% of score) | SEC EDGAR Form 4 | Built |
 | Major holder activity | SEC EDGAR Schedule 13D/G | Built |
 | Price, market cap, P/E | Market data API | **Needs a key** |
 | Earnings surprise | Market data API | **Needs a key** |
@@ -77,10 +77,10 @@ news — never for quotes.
 ## The screening brief
 
 `npm run screen` implements a fixed framework the user specified. Weights:
-net insider/fund accumulation 30%, earnings surprise 25%, FCF yield 25%,
-analyst sentiment 20%. Filters: net accumulation over 90 days, positive TTM
-FCF or guidance turning positive, market cap > $1000M, P/E below sector
-average, positive surprise in last two quarters.
+net insider/fund accumulation 20%, earnings surprise 25%, FCF yield 25%,
+analyst sentiment 20%, PEG ratio 10%. Filters: net accumulation over 90 days,
+positive TTM FCF or guidance turning positive, market cap > $1000M, P/E below
+sector average, positive surprise in last two quarters.
 
 The ownership factor measures **net direction over 90 days, not activity**.
 A 14-day window found nothing across the entire universe; 90 days also lets
@@ -140,6 +140,40 @@ is `prior FY + current YTD − year-ago YTD`, using the 6- and 9-month spans in
 10-Qs that the annual and quarterly buckets discard. This is not cosmetic:
 NVDA's FY understated trailing FCF by 22%, and SWKS's *overstated* it by more
 than 2x. `FlowValue.basis` says `ttm` or `fy` per company.
+
+## PEG — the only inverted factor
+
+Source is Nasdaq `analyst/{ticker}/earnings-forecast` (`yearlyForecast.rows`,
+forward consensus EPS). No new key — it is the same host the price, surprise,
+and sentiment factors already use.
+
+PEG is trailing P/E ÷ forward consensus EPS CAGR in percent. Every other score
+in the system reads higher-is-better; this one is lower-is-better, so
+`pegScore` subtracts the scale from 100 instead of applying it. Anything that
+inverts a sign here silently flips the factor rather than failing.
+
+Three guards, each producing `UNVERIFIED` rather than a number, because in all
+three cases the arithmetic succeeds and returns something that sorts as
+*cheap*:
+
+1. **P/E ≤ 0 is unverifiable.** Negative trailing earnings leave no multiple to
+   price growth against.
+2. **Any EPS ≤ 0 inside the growth span is unverifiable.** A CAGR off a
+   negative base is arithmetically meaningless. TEM going -1.38 to -0.05 is a
+   real improvement and produces a positive-looking rate describing a shrinking
+   loss — a number that does not belong in a valuation ratio.
+3. **Growth ≤ 0 is unverifiable.** A negative PEG would sort as the cheapest
+   name in the universe.
+
+**The CAGR compounds over calendar years, not row count.** Nasdaq drops a row
+it has no consensus for rather than interpolating, so surviving rows are not
+guaranteed consecutive. Counting rows would have compounded a 3-year span over
+1 interval and reported 100%/yr where the truth was 26%/yr.
+
+**A legitimate PEG scoring 0 must not be converted to `UNVERIFIED`.**
+Unverified factors are excluded and the composite rescaled, so refusing a real
+zero would *raise* the company's score — laundering a finding into an absence.
+`UNVERIFIED` means "could not be checked", never "checked and ugly".
 
 ## Schedule 13D/G — two traps
 

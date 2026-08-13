@@ -66,6 +66,8 @@ function buildFrontmatter(
   fm.set("price", fixed(valueOf(c.price), 2));
   fm.set("market_cap", fixed(valueOf(c.marketCap), 0));
   fm.set("pe", fixed(valueOf(c.peRatio), 1));
+  fm.set("peg", fixed(valueOf(c.peg), 2));
+  fm.set("peg_growth", fixed(valueOf(c.epsGrowth)?.percentPerYear, 1));
   fm.set("fcf", fixed(valueOf(c.fcf), 0));
   fm.set("fcf_basis", c.fcfBasis);
   fm.set("fcf_yield", fixed(valueOf(c.fcfYield), 4));
@@ -155,11 +157,23 @@ function buildEvents(
   return events;
 }
 
+/** Table cells cannot contain a bare pipe without ending the column. */
+function cell(text: string): string {
+  return text.replace(/\|/g, "\\|");
+}
+
 function factorTable(c: ScreenedCompany): string {
   const rows = (Object.keys(WEIGHTS) as FactorName[]).map((name) => {
     const f = c.factors[name];
     const score = isVerified(f.score) ? f.score.value.toFixed(0) : "UNVERIFIED";
-    return `| ${FACTOR_LABELS[name]} | ${(WEIGHTS[name] * 100).toFixed(0)}% | ${score} | ${f.detail} |`;
+    // An UNVERIFIED score has to carry its reason here as it does on the
+    // console. PEG is the common case: its basis line names a perfectly good
+    // growth rate even when what failed was the trailing P/E, so the cell
+    // reads as though the factor should have scored.
+    const basis = isVerified(f.score)
+      ? f.detail
+      : `${f.detail} — ${f.score.reason}`;
+    return `| ${FACTOR_LABELS[name]} | ${(WEIGHTS[name] * 100).toFixed(0)}% | ${score} | ${cell(basis)} |`;
   });
 
   return [

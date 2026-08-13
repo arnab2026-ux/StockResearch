@@ -6,6 +6,7 @@ import {
   composite,
   fcfYieldScore,
   netAccumulationScore,
+  pegScore,
   scale,
   sentimentScore,
   surpriseScore,
@@ -29,6 +30,7 @@ function factors(over: Partial<Record<keyof typeof WEIGHTS, Sourced<number>>>): 
     insider: factor(over.insider ?? sourced(50, SRC)),
     surprise: factor(over.surprise ?? sourced(50, SRC)),
     fcfYield: factor(over.fcfYield ?? sourced(50, SRC)),
+    peg: factor(over.peg ?? sourced(50, SRC)),
     sentiment: factor(over.sentiment ?? sourced(50, SRC)),
   };
 }
@@ -47,11 +49,12 @@ describe("composite", () => {
         insider: sourced(100, SRC),
         surprise: sourced(0, SRC),
         fcfYield: sourced(0, SRC),
+        peg: sourced(0, SRC),
         sentiment: sourced(0, SRC),
       }),
     );
 
-    assert.equal(result.value, 30);
+    assert.equal(result.value, 20);
     assert.equal(result.coverage, 1);
   });
 
@@ -61,6 +64,7 @@ describe("composite", () => {
         insider: sourced(100, SRC),
         surprise: sourced(100, SRC),
         fcfYield: sourced(100, SRC),
+        peg: sourced(100, SRC),
         sentiment: sourced(100, SRC),
       }),
     );
@@ -69,17 +73,18 @@ describe("composite", () => {
   });
 
   test("an unavailable factor is excluded, not scored zero", () => {
-    // Insider is 30% of the weight. Were it scored zero the composite would
-    // be 35; rescaling over available weight keeps it at 50.
+    // Insider is 20% of the weight. Were it scored zero the composite would
+    // be 40; rescaling over available weight keeps it at 50.
     const result = composite({
       insider: factor(unverified("no data source")),
       surprise: factor(sourced(50, SRC)),
       fcfYield: factor(sourced(50, SRC)),
+      peg: factor(sourced(50, SRC)),
       sentiment: factor(sourced(50, SRC)),
     });
 
     assert.equal(result.value, 50);
-    assert.ok(Math.abs(result.coverage - 0.7) < 1e-9);
+    assert.ok(Math.abs(result.coverage - 0.8) < 1e-9);
     assert.equal(result.missing[0]?.factor, "insider");
   });
 
@@ -98,6 +103,7 @@ describe("composite", () => {
       insider: factor(unverified("x")),
       surprise: factor(unverified("x")),
       fcfYield: factor(unverified("x")),
+      peg: factor(unverified("x")),
       sentiment: factor(unverified("x")),
     });
 
@@ -111,12 +117,24 @@ describe("composite", () => {
         insider: sourced(500, SRC),
         surprise: sourced(-100, SRC),
         fcfYield: sourced(0, SRC),
+        peg: sourced(0, SRC),
         sentiment: sourced(0, SRC),
       }),
     );
 
     // Insider clamps to 100, surprise to 0.
-    assert.equal(result.value, 30);
+    assert.equal(result.value, 20);
+  });
+
+  test("a company with no PEG is not penalised for it", () => {
+    // The common case for loss-making names: everything else is measurable and
+    // the composite must reflect those factors alone.
+    const withPeg = composite(factors({ peg: sourced(0, SRC) }));
+    const withoutPeg = composite(factors({ peg: unverified("negative P/E") }));
+
+    assert.ok(Math.abs((withoutPeg.value ?? 0) - 50) < 1e-9);
+    assert.ok(withPeg.value !== undefined && withPeg.value < 50);
+    assert.ok(Math.abs(withoutPeg.coverage - 0.9) < 1e-9);
   });
 });
 
@@ -273,6 +291,30 @@ describe("FCF yield score", () => {
 
   test("is monotonic below saturation", () => {
     assert.ok(fcfYieldScore(0.04).score > fcfYieldScore(0.02).score);
+  });
+});
+
+describe("PEG score", () => {
+  test("is inverted — a lower PEG scores higher", () => {
+    // The one factor in the system where less is better.
+    assert.ok(pegScore(0.9).score > pegScore(1.8).score);
+    assert.ok(pegScore(1.8).score > pegScore(2.6).score);
+  });
+
+  test("saturates at 0.75 and bottoms out at 3.0", () => {
+    assert.equal(pegScore(0.75).score, 100);
+    assert.equal(pegScore(0.2).score, 100);
+    assert.equal(pegScore(3).score, 0);
+    assert.equal(pegScore(12).score, 0);
+  });
+
+  test("PEG 1.0 sits near the top of the band", () => {
+    const r = pegScore(1);
+    assert.ok(r.score > 85 && r.score < 95, `PEG 1.0 scored ${r.score}`);
+  });
+
+  test("detail states the ratio", () => {
+    assert.equal(pegScore(1.234).detail, "PEG 1.23");
   });
 });
 

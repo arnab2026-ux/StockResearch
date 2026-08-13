@@ -77,6 +77,7 @@ export const UNIVERSE: readonly UniverseEntry[] = [
   { ticker: "CRSP", category: "biotech", exchange: "nasdaq" },
   { ticker: "NTRA", category: "biotech", exchange: "nasdaq" },
   { ticker: "ILMN", category: "biotech", exchange: "nasdaq" },
+  { ticker: "PACB", category: "biotech", exchange: "nasdaq" },
   { ticker: "MRNA", category: "biotech", exchange: "nasdaq" },
   { ticker: "MDGL", category: "biotech", exchange: "nasdaq" },
   { ticker: "DNA", category: "biotech", exchange: "nyse" },

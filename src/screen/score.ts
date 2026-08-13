@@ -1,9 +1,11 @@
 /**
  * Composite scoring for the screening brief.
  *
- * Weights are fixed by the brief: insider or major-investor buying 30%,
+ * Weights are fixed by the brief: insider or major-investor buying 20%,
  * earnings surprise strength 25%, free cash flow yield 25%, analyst sentiment
- * 20%.
+ * 20%, PEG ratio 10%. The ownership weight funds the PEG slice because PEG is
+ * the one factor that prices growth against what is being paid for it, and the
+ * ownership signal is the noisiest of the five.
  *
  * The important design decision is what an unavailable factor does. Scoring it
  * zero would be an estimate — it asserts "no insider buying" when the truth is
@@ -17,9 +19,10 @@
 import { isVerified, type Sourced } from "../lib/provenance.js";
 
 export const WEIGHTS = {
-  insider: 0.3,
+  insider: 0.2,
   surprise: 0.25,
   fcfYield: 0.25,
+  peg: 0.1,
   sentiment: 0.2,
 } as const;
 
@@ -29,6 +32,7 @@ export const FACTOR_LABELS: Record<FactorName, string> = {
   insider: "Net insider / fund accumulation",
   surprise: "Earnings surprise strength",
   fcfYield: "Free cash flow yield",
+  peg: "PEG ratio",
   sentiment: "Analyst sentiment",
 };
 
@@ -216,6 +220,29 @@ export function fcfYieldScore(fcfYield: number): { score: number; detail: string
   return {
     score,
     detail: `FCF yield ${(fcfYield * 100).toFixed(2)}%`,
+  };
+}
+
+/**
+ * PEG ratio score, 0-100.
+ *
+ * The only inverted factor in the system: every other score reads
+ * higher-is-better, PEG reads lower-is-better, so the scale is subtracted from
+ * 100 rather than applied directly.
+ *
+ * 1.0 is the textbook line between growth being paid for and being paid up
+ * for, so the band is set around it rather than on it — 0.75 and below is
+ * unambiguously cheap for the growth and saturates, 3.0 and above scores zero.
+ * Reaching zero rather than staying above it matters: at 10% of the composite
+ * a compressed band would make the factor decorative.
+ *
+ * Callers must have applied the guards in `metrics/peg.ts` first; a negative
+ * PEG reaching here would score 100.
+ */
+export function pegScore(peg: number): { score: number; detail: string } {
+  return {
+    score: 100 - scale(peg, 0.75, 3.0),
+    detail: `PEG ${peg.toFixed(2)}`,
   };
 }
 

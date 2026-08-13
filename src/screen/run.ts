@@ -30,9 +30,16 @@ import {
 } from "../lib/provenance.js";
 import { attempt } from "../lib/web.js";
 import { ttmFreeCashFlow, type FlowBasis } from "../metrics/fundamentals.js";
+import {
+  consensusEpsGrowth,
+  describeGrowth,
+  pegRatio,
+  type EpsGrowth,
+} from "../metrics/peg.js";
 import { strengthProfile, type StrengthProfile } from "../metrics/strength.js";
 import {
   fetchEarningsSurprises,
+  fetchEpsForecasts,
   fetchQuote,
   fetchRatings,
   type EarningsSurprise,
@@ -44,6 +51,7 @@ import {
   fcfYieldScore,
   formatUsd,
   netAccumulationScore,
+  pegScore,
   sentimentScore,
   surpriseScore,
   type CompositeScore,
@@ -80,6 +88,8 @@ export interface ScreenedCompany {
   fcf: Sourced<number>;
   fcfBasis: FlowBasis;
   fcfYield: Sourced<number>;
+  epsGrowth: Sourced<EpsGrowth>;
+  peg: Sourced<number>;
 
   insider: InsiderSummary | undefined;
   surprises: Sourced<EarningsSurprise[]>;
@@ -135,7 +145,7 @@ export async function gather(
     ...(opts.refresh !== undefined ? { refresh: opts.refresh } : {}),
   });
 
-  const [insiderActivity, quote, surprises, ratings, tipranks] = await Promise.all([
+  const [insiderActivity, quote, surprises, forecasts, ratings, tipranks] = await Promise.all([
     fetchInsiderActivity(company.cik, { windowDays }).catch(() => undefined),
     attempt("Nasdaq quote", async () => sourced(await fetchQuote(company.ticker), {
       name: "Nasdaq",
@@ -144,6 +154,7 @@ export async function gather(
       retrievedAt: today(),
     })),
     attempt("Nasdaq earnings surprise", () => fetchEarningsSurprises(company.ticker)),
+    attempt("Nasdaq EPS consensus forecast", () => fetchEpsForecasts(company.ticker)),
     attempt("Nasdaq analyst ratings", async () =>
       sourced(await fetchRatings(company.ticker), {
         name: "Nasdaq analyst ratings",
@@ -192,6 +203,12 @@ export async function gather(
     derivedSource("free cash flow over market capitalisation"),
   );
 
+  // PEG reuses the trailing P/E above rather than recomputing price over EPS,
+  // so the multiple quoted in the report and the one inside the ratio can
+  // never drift apart.
+  const epsGrowth = consensusEpsGrowth(forecasts);
+  const peg = pegRatio(peRatio, epsGrowth);
+
   const upsideToTarget = derive(
     { target: priceTarget, price },
     (v) => v.target / v.price - 1,
@@ -205,6 +222,7 @@ export async function gather(
     insider: buildInsiderFactor(insider, windowDays),
     surprise: buildSurpriseFactor(surprises),
     fcfYield: buildFcfYieldFactor(fcfYield),
+    peg: buildPegFactor(peg, epsGrowth),
     sentiment: buildSentimentFactor(tr, isVerified(ratings) ? ratings.value : undefined),
   };
 
@@ -224,6 +242,8 @@ export async function gather(
     fcf: fcfFlow.amount,
     fcfBasis: fcfFlow.basis,
     fcfYield,
+    epsGrowth,
+    peg,
     insider,
     surprises,
     strength,
@@ -287,6 +307,24 @@ function buildFcfYieldFactor(fcfYield: Sourced<number>): Factors["fcfYield"] {
 
   const { score, detail } = fcfYieldScore(fcfYield.value);
   return { score: sourced(score, fcfYield.source), detail };
+}
+
+function buildPegFactor(
+  peg: Sourced<number>,
+  growth: Sourced<EpsGrowth>,
+): Factors["peg"] {
+  // The growth rate is worth showing even when it is what disqualified the
+  // ratio — "not forecast to grow" is a finding, not an absence of data.
+  const basis = isVerified(growth)
+    ? describeGrowth(growth.value)
+    : "no usable consensus EPS growth rate";
+
+  if (!isVerified(peg)) {
+    return { score: unverified(peg.reason), detail: basis };
+  }
+
+  const { score, detail } = pegScore(peg.value);
+  return { score: sourced(score, peg.source), detail: `${detail} on ${basis}` };
 }
 
 /**
