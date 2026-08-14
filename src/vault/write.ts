@@ -15,6 +15,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { isVerified, valueOf } from "../lib/provenance.js";
+import { OWNER_LABELS } from "../providers/houseDisclosures.js";
 import type { ScreenedCompany } from "../screen/run.js";
 import { FACTOR_LABELS, WEIGHTS, type FactorName } from "../screen/score.js";
 import {
@@ -80,6 +81,19 @@ function buildFrontmatter(
     fm.set("ownership_window_days", String(c.insider.windowDays));
   }
 
+  // Counts only. The House discloses a dollar bracket, not a value, and a
+  // frontmatter field holding a number would be read as one.
+  if (c.congress) {
+    fm.set("congress_buys", String(c.congress.purchases));
+    fm.set("congress_sells", String(c.congress.sales));
+    fm.set("congress_net", String(c.congress.net));
+    fm.set("congress_filers", String(c.congress.distinctFilers));
+    fm.set("congress_option_trades", String(c.congress.optionTrades));
+    // Coverage, not a finding. Without it a zero above is indistinguishable
+    // from "nobody could read the filings".
+    fm.set("congress_unreadable_ptrs", String(c.congress.unreadablePtrs));
+  }
+
   fm.set("f_score", `${c.strength.fScore.score}/${c.strength.fScore.available}`);
   if (c.strength.altman.zone) fm.set("altman_zone", c.strength.altman.zone);
 
@@ -132,6 +146,20 @@ function buildEvents(
       `- ${runDate} — Insiders net ${c.insider.netValue >= 0 ? "+" : "-"}$${Math.abs(
         Math.round(c.insider.netValue),
       ).toLocaleString("en-US")} over ${c.insider.windowDays}d`,
+    );
+  }
+
+  // Dated by the transaction, not by the filing or the run, so a trade that
+  // stays in the window logs once and re-derives to the identical line on
+  // every later run — which is what the event log's deduplication keys on.
+  // Using the filing date here would also date a March 2025 trade to August
+  // 2026, the same error that would wreck the window.
+  for (const t of c.congress?.trades ?? []) {
+    const assetType = t.assetType ? ` [${t.assetType}]` : "";
+    events.push(
+      `- ${t.transactionDate} — Congress: ${t.filer} (${OWNER_LABELS[t.owner]}) ` +
+        `${t.direction}, ${t.amount?.asFiled ?? "amount UNVERIFIED"}${assetType} ` +
+        `(disclosed ${t.filedOn})`,
     );
   }
 
@@ -191,6 +219,38 @@ function filterTable(c: ScreenedCompany): string {
   return ["| | Filter | Detail |", "| --- | --- | --- |", ...rows].join("\n");
 }
 
+/**
+ * States how much of the congressional window was legible.
+ *
+ * The event log records what was found; nothing there records what could not
+ * be looked at. Roughly one PTR in eight is a scan of a paper filing that
+ * extracts to nothing, and those filings are not randomly distributed — a
+ * member who always files on paper is invisible to this factor on every run.
+ * A reader who sees no congressional events has to be able to tell that from
+ * a reader whose window was fully read.
+ */
+function congressCoverageLines(c: ScreenedCompany): string[] {
+  if (!c.congress) return [];
+
+  const found =
+    c.congress.trades.length === 0
+      ? "No congressional disclosures with a transaction date in this window."
+      : `${c.congress.trades.length} congressional disclosure(s) in this window ` +
+        `(${c.congress.purchases} buy / ${c.congress.sales} sell` +
+        (c.congress.optionTrades > 0
+          ? `, ${c.congress.optionTrades} in options rather than shares`
+          : "") +
+        ").";
+
+  const coverage =
+    c.congress.unreadablePtrs > 0
+      ? ` **${c.congress.unreadablePtrs} PTR(s) in the window could not be read** ` +
+        "(scans of paper filings), so this is a floor, not a count."
+      : "";
+
+  return [`**Congressional disclosures:** ${found}${coverage}`, ""];
+}
+
 async function readIfExists(path: string): Promise<string | undefined> {
   try {
     return await readFile(path, "utf8");
@@ -239,6 +299,7 @@ export async function writeCompanyNote(
     "",
     filterTable(c),
     "",
+    ...congressCoverageLines(c),
     `**Thesis (generated):** ${c.thesis}`,
     "",
     `**Top risk (generated):** ${c.topRisk}`,
@@ -299,12 +360,19 @@ export async function writeScreenNote(
   );
   const qualifying = ranked.filter((c) => c.qualifies);
 
+  // Run-level, so any company that saw the House pass carries the same number.
+  const unreadable = companies.reduce(
+    (n, c) => Math.max(n, c.congress?.unreadablePtrs ?? 0),
+    0,
+  );
+
   const fm = new Map<string, string>([
     ["type", "screen"],
     ["date", runDate],
     ["universe_size", String(companies.length)],
     ["qualifying", String(qualifying.length)],
     ["ownership_window_days", String(meta.windowDays)],
+    ["congress_unreadable_ptrs", String(unreadable)],
     ["tags", "screen, us-equity"],
   ]);
 
@@ -353,7 +421,18 @@ export async function writeScreenNote(
     "## Sources",
     "",
     "- SEC EDGAR — fundamentals, Form 4, Schedule 13D/G",
+    "- US House Clerk — Periodic Transaction Reports (STOCK Act disclosures)",
     "- Nasdaq — price, market cap, earnings surprise, analyst consensus",
+    ...(unreadable > 0
+      ? [
+          "",
+          `**Congressional coverage is partial.** ${unreadable} Periodic Transaction ` +
+            "Report(s) in this window are scans of paper filings and extract to no " +
+            "text at all. Their trades are counted nowhere in this note. The gap " +
+            "is not random: a member who files on paper is invisible to this " +
+            "factor on every run.",
+        ]
+      : []),
   ].join("\n");
 
   await writeFile(path, serializeNote(fm, body), "utf8");

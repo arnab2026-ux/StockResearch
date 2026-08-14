@@ -68,6 +68,46 @@ export interface WebFetchOptions {
   cacheKey?: string;
 }
 
+/**
+ * Fetches a URL as raw bytes, throttled per host like the JSON path.
+ *
+ * Deliberately uncached: the payloads this exists for are a ZIP archive and
+ * PDF documents, neither of which survives the JSON disk cache. Callers cache
+ * what they derive from the bytes instead — a parsed index, or extracted
+ * text — which is both smaller and the thing they actually reuse.
+ */
+export async function fetchBinary(
+  url: string,
+  opts: { headers?: Record<string, string> } = {},
+): Promise<Buffer> {
+  const host = new URL(url).host;
+
+  return throttleHost(host, async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+    try {
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "User-Agent": BROWSER_UA,
+          Accept: "*/*",
+          "Accept-Language": "en-US,en;q=0.9",
+          ...opts.headers,
+        },
+      });
+
+      if (!res.ok) {
+        throw new WebFetchError(`HTTP ${res.status} for ${url}`, res.status);
+      }
+
+      return Buffer.from(await res.arrayBuffer());
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+}
+
 export async function fetchJson<T>(url: string, opts: WebFetchOptions): Promise<T> {
   const host = new URL(url).host;
 

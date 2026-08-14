@@ -38,6 +38,11 @@ import {
 } from "../metrics/peg.js";
 import { strengthProfile, type StrengthProfile } from "../metrics/strength.js";
 import {
+  summariseCongressTrades,
+  type CongressSummary,
+  type CongressTrade,
+} from "../providers/houseDisclosures.js";
+import {
   fetchEarningsSurprises,
   fetchEpsForecasts,
   fetchQuote,
@@ -92,6 +97,16 @@ export interface ScreenedCompany {
   peg: Sourced<number>;
 
   insider: InsiderSummary | undefined;
+  /**
+   * Congressional disclosures for this ticker, or undefined when the House
+   * feed was not checked.
+   *
+   * Held beside the EDGAR summary rather than inside it, because the two
+   * sources fail independently: folding it into `InsiderSummary` would make a
+   * dead EDGAR submissions feed silently take the congressional evidence with
+   * it, and the House Clerk is not an EDGAR product in the first place.
+   */
+  congress: CongressSummary | undefined;
   surprises: Sourced<EarningsSurprise[]>;
   strength: StrengthProfile;
 
@@ -137,7 +152,25 @@ function ttmEpsFrom(surprises: Sourced<EarningsSurprise[]>): Sourced<number> {
 export async function gather(
   company: Company,
   entry: UniverseEntry,
-  opts: { refresh?: boolean; insiderWindowDays?: number } = {},
+  opts: {
+    refresh?: boolean;
+    insiderWindowDays?: number;
+    /**
+     * Ticker → congressional trades for the whole universe, fetched once by
+     * the caller. The House Clerk indexes by filer, not by ticker, so there is
+     * no per-company query to make here — the year is read once and inverted.
+     * Undefined means the feed was not consulted at all.
+     */
+    congressTrades?: Map<string, CongressTrade[]>;
+    /**
+     * PTRs in the window that could not be read at all — scans of paper
+     * filings, mostly. Run-level rather than per-company, because the source
+     * is filer-indexed: an unreadable filing is a hole in every ticker's
+     * coverage at once, and the number has to travel with the summary or the
+     * note says "none disclosed" without saying how much was legible.
+     */
+    congressUnreadablePtrs?: number;
+  } = {},
 ): Promise<ScreenedCompany> {
   const windowDays = opts.insiderWindowDays ?? INSIDER_WINDOW_DAYS;
 
@@ -174,6 +207,14 @@ export async function gather(
   ]);
 
   const insider = insiderActivity ? summariseInsiderActivity(insiderActivity) : undefined;
+
+  const congress = opts.congressTrades
+    ? summariseCongressTrades(opts.congressTrades.get(company.ticker) ?? [], windowDays, {
+        ...(opts.congressUnreadablePtrs !== undefined
+          ? { unreadablePtrs: opts.congressUnreadablePtrs }
+          : {}),
+      })
+    : undefined;
 
   const q = isVerified(quote) ? quote.value : undefined;
   const tr = isVerified(tipranks) ? tipranks.value : undefined;
@@ -219,7 +260,7 @@ export async function gather(
 
   // --- factors ------------------------------------------------------------
   const factors: Factors = {
-    insider: buildInsiderFactor(insider, windowDays),
+    insider: buildInsiderFactor(insider, congress, windowDays),
     surprise: buildSurpriseFactor(surprises),
     fcfYield: buildFcfYieldFactor(fcfYield),
     peg: buildPegFactor(peg, epsGrowth),
@@ -245,6 +286,7 @@ export async function gather(
     epsGrowth,
     peg,
     insider,
+    congress,
     surprises,
     strength,
     factors,
@@ -259,12 +301,18 @@ export async function gather(
 
 function buildInsiderFactor(
   insider: InsiderSummary | undefined,
+  congress: CongressSummary | undefined,
   windowDays: number,
 ): Factors["insider"] {
   if (!insider) {
+    // The EDGAR components are 90% of this factor, so it stays unverified even
+    // when the House feed came back. The congressional detail is still carried
+    // on the company and printed — an unscored finding is not a hidden one.
     return {
       score: unverified("EDGAR insider feed unavailable"),
-      detail: "not checked",
+      detail: congress
+        ? `not scored; ${congress.trades.length} congressional disclosure(s) in ${windowDays}d`
+        : "not checked",
     };
   }
 
@@ -276,11 +324,24 @@ function buildInsiderFactor(
     holdersIncreasing: insider.holdersIncreasing,
     holdersDecreasing: insider.holdersDecreasing,
     windowDays,
+    ...(congress
+      ? {
+          congress: {
+            net: congress.net,
+            purchases: congress.purchases,
+            sales: congress.sales,
+            distinctFilers: congress.distinctFilers,
+          },
+        }
+      : {}),
   });
 
   return {
     score: sourced(score, {
-      name: `SEC EDGAR Form 4 and Schedule 13D/G (${windowDays}-day window)`,
+      name:
+        `SEC EDGAR Form 4 and Schedule 13D/G` +
+        (congress ? " and US House Clerk PTRs" : "") +
+        ` (${windowDays}-day window)`,
       url: "https://www.sec.gov/edgar",
       asOf: today(),
       retrievedAt: today(),
@@ -569,6 +630,14 @@ export function describe(c: ScreenedCompany): { thesis: string; topRisk: string 
       parts.push(`5%+ holders +${c.insider.netHolderPercentChange.toFixed(1)}pp`);
     }
     if (parts.length) bits.push(parts.join(" and "));
+  }
+
+  // Counts, not dollars: the disclosed amount is a bracket and stays one.
+  if (c.congress && c.congress.net > 0) {
+    bits.push(
+      `${c.congress.purchases} congressional purchase(s) disclosed by ` +
+        `${c.congress.distinctFilers} filer(s) in ${c.congress.windowDays}d`,
+    );
   }
 
   if (strongest) bits.push(`strongest factor ${strongest.factor}`);

@@ -118,22 +118,51 @@ export function scale(value: number, min: number, max: number): number {
 }
 
 /**
+ * Component split inside the 20% ownership factor.
+ *
+ * Congressional disclosure was funded out of the two largest components rather
+ * than by widening the factor: the brief fixes the ownership weight at 20% and
+ * this is a fourth reading of the same question, not a sixth factor. Breadth
+ * keeps its 15% because it is already the smallest slice and the least noisy
+ * of the three.
+ */
+export const OWNERSHIP_COMPONENTS = {
+  /** Insider dollar flow: open-market purchases less sales, in dollars. */
+  flow: 0.4,
+  /** Net percentage points of the class added by 5%+ holders. */
+  stake: 0.35,
+  /** Distinct insider buyers net of distinct sellers. */
+  breadth: 0.15,
+  /** Net count of congressional purchases less sales over the window. */
+  congress: 0.1,
+} as const;
+
+/**
  * Net accumulation score, 0-100.
  *
- * Measures whether insiders and 5%+ holders were net buyers over the window,
- * not merely whether they were active. Selling insiders and exiting funds push
- * the score below the neutral midpoint, which a presence-of-activity measure
- * cannot express: a fund cutting its stake and a fund building one both look
- * like "a 13D/G filing" until the direction is read.
+ * Measures whether insiders, 5%+ holders and disclosing members of Congress
+ * were net buyers over the window, not merely whether they were active.
+ * Selling insiders and exiting funds push the score below the neutral midpoint,
+ * which a presence-of-activity measure cannot express: a fund cutting its stake
+ * and a fund building one both look like "a 13D/G filing" until the direction
+ * is read.
  *
- * 50 is neutral — no net movement either way. Three components:
+ * 50 is neutral — no net movement either way. Four components, weighted by
+ * `OWNERSHIP_COMPONENTS`: insider dollar flow 40%, institutional stake change
+ * 35%, breadth 15%, congressional net direction 10%. Percentage points are the
+ * natural unit for the stake component, since a 2-point move means the same
+ * thing regardless of company size.
  *
- * - **Insider dollar flow** (45%): purchases less sales, in dollars.
- * - **Institutional stake change** (40%): net percentage points of the class
- *   added by 5%+ holders. Percentage points are the natural unit here, since
- *   a 2-point move means the same thing regardless of company size.
- * - **Breadth** (15%): distinct buyers net of distinct sellers. Several
- *   insiders acting independently is stronger than one person's large trade.
+ * **The congressional component is counts, never dollars.** House disclosures
+ * report a bracket ("$1,001 - $15,000"), not a value; turning that into a
+ * dollar figure would be estimating, so only the direction and the number of
+ * trades are used.
+ *
+ * `congress` being undefined means the House feed was not checked, and the
+ * three EDGAR components are renormalised over their own weight — the same
+ * treatment `composite()` gives an unavailable factor. Present-but-empty is a
+ * different claim: it means the window was checked and quiet, which is
+ * genuinely neutral.
  */
 export function netAccumulationScore(input: {
   netInsiderValue: number;
@@ -143,34 +172,66 @@ export function netAccumulationScore(input: {
   holdersIncreasing: number;
   holdersDecreasing: number;
   windowDays: number;
+  congress?: {
+    /** Purchases less sales, as a count. */
+    net: number;
+    purchases: number;
+    sales: number;
+    distinctFilers: number;
+  };
 }): { score: number; detail: string } {
   const NEUTRAL = 50;
+  const w = OWNERSHIP_COMPONENTS;
 
   const flow = scale(input.netInsiderValue, -2_000_000, 2_000_000);
   const stake = scale(input.netHolderPercentChange, -4, 4);
   const breadth = scale(input.distinctBuyers - input.distinctSellers, -3, 3);
 
-  const score = flow * 0.45 + stake * 0.4 + breadth * 0.15;
+  let weighted = flow * w.flow + stake * w.stake + breadth * w.breadth;
+  let usedWeight = w.flow + w.stake + w.breadth;
+
+  if (input.congress) {
+    // Three net trades saturates. Congressional activity in any one name is
+    // rare enough that a wider band would leave the component permanently
+    // pinned near neutral even when a member did disclose a purchase.
+    weighted += scale(input.congress.net, -3, 3) * w.congress;
+    usedWeight += w.congress;
+  }
+
+  const score = weighted / usedWeight;
 
   const noEvidence =
     input.netInsiderValue === 0 &&
     input.netHolderPercentChange === 0 &&
     input.distinctBuyers === 0 &&
-    input.distinctSellers === 0;
+    input.distinctSellers === 0 &&
+    (input.congress === undefined ||
+      (input.congress.purchases === 0 && input.congress.sales === 0));
 
   const dollars = (n: number): string =>
     `${n < 0 ? "-" : "+"}$${formatUsd(Math.abs(Math.round(n)))}`;
 
+  const congressDetail = input.congress
+    ? input.congress.purchases + input.congress.sales === 0
+      ? "no congressional disclosures"
+      : `Congress net ${input.congress.net >= 0 ? "+" : ""}${input.congress.net} ` +
+        `(${input.congress.purchases} buy / ${input.congress.sales} sell, ` +
+        `${input.congress.distinctFilers} filer(s))`
+    : undefined;
+
   const detail = noEvidence
-    ? `no insider trades or 5%+ holder changes in ${input.windowDays}d`
+    ? `no insider trades, 5%+ holder changes${
+        input.congress ? " or congressional disclosures" : ""
+      } in ${input.windowDays}d`
     : [
         `insider net ${dollars(input.netInsiderValue)}`,
         `${input.distinctBuyers} buyer(s) / ${input.distinctSellers} seller(s)`,
         `5%+ holders net ${input.netHolderPercentChange >= 0 ? "+" : ""}${input.netHolderPercentChange.toFixed(2)}pp ` +
           `(${input.holdersIncreasing} up, ${input.holdersDecreasing} down)`,
+        ...(congressDetail ? [congressDetail] : []),
       ].join(", ");
 
-  // With nothing on either side the honest reading is neutral, not zero: an
+  // With nothing on any side the honest reading is neutral, not zero: an
   // absence of trading is not evidence of distribution.
   return { score: noEvidence ? NEUTRAL : score, detail };
 }

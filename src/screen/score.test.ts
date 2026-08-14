@@ -6,6 +6,7 @@ import {
   composite,
   fcfYieldScore,
   netAccumulationScore,
+  OWNERSHIP_COMPONENTS,
   pegScore,
   scale,
   sentimentScore,
@@ -245,6 +246,139 @@ describe("net accumulation score", () => {
 
     assert.match(r.detail, /insider net \+\$250,000/);
     assert.match(r.detail, /5%\+ holders net \+1\.50pp/);
+  });
+});
+
+describe("ownership components", () => {
+  const QUIET = {
+    netInsiderValue: 0,
+    distinctBuyers: 0,
+    distinctSellers: 0,
+    netHolderPercentChange: 0,
+    holdersIncreasing: 0,
+    holdersDecreasing: 0,
+    windowDays: 90,
+  };
+
+  /** EDGAR side maxed out, so the renormalisation is visible in the number. */
+  const EDGAR_MAX = { ...QUIET, netInsiderValue: 2_000_000 };
+
+  const congress = (net: number, purchases = Math.max(net, 0), sales = Math.max(-net, 0)) => ({
+    net,
+    purchases,
+    sales,
+    distinctFilers: Math.max(1, purchases + sales),
+  });
+
+  test("the four components sum to one", () => {
+    const total = Object.values(OWNERSHIP_COMPONENTS).reduce((a, b) => a + b, 0);
+    assert.ok(Math.abs(total - 1) < 1e-9, `components sum to ${total}`);
+  });
+
+  test("the split is the one the design fixes", () => {
+    assert.deepEqual(OWNERSHIP_COMPONENTS, {
+      flow: 0.4,
+      stake: 0.35,
+      breadth: 0.15,
+      congress: 0.1,
+    });
+  });
+
+  test("an unchecked House feed renormalises rather than scoring the slice zero", () => {
+    // flow 100, stake 50, breadth 50 → 65 of 0.9 available weight.
+    // Scoring the missing congress slice zero would give 65; rescaling gives
+    // 72.2, which is the same treatment `composite()` gives a missing factor.
+    const r = netAccumulationScore(EDGAR_MAX);
+    assert.ok(Math.abs(r.score - 65 / 0.9) < 1e-9, `scored ${r.score}`);
+    assert.ok(r.score > 65, "the missing component must not drag the score down");
+  });
+
+  test("present-but-empty is neutral evidence, not the same as unchecked", () => {
+    const unchecked = netAccumulationScore(EDGAR_MAX);
+    const checkedAndQuiet = netAccumulationScore({ ...EDGAR_MAX, congress: congress(0, 0, 0) });
+
+    // A window that was read and had nothing in it genuinely pulls toward
+    // neutral. A window that was never read cannot say anything at all.
+    assert.ok(Math.abs(checkedAndQuiet.score - 70) < 1e-9, `scored ${checkedAndQuiet.score}`);
+    assert.ok(checkedAndQuiet.score < unchecked.score);
+    assert.match(checkedAndQuiet.detail, /no congressional disclosures/);
+    assert.doesNotMatch(unchecked.detail, /congress/i);
+  });
+
+  test("a quiet window with no House pass is exactly neutral", () => {
+    assert.equal(netAccumulationScore(QUIET).score, 50);
+    assert.equal(netAccumulationScore({ ...QUIET, congress: congress(0, 0, 0) }).score, 50);
+  });
+
+  test("one congressional purchase in an otherwise quiet name moves the score a little", () => {
+    const r = netAccumulationScore({ ...QUIET, congress: congress(1) });
+
+    // 45 from the three neutral EDGAR components, plus scale(1,-3,3)·0.10.
+    assert.ok(Math.abs(r.score - (45 + (100 * 2) / 3 / 10)) < 1e-9, `scored ${r.score}`);
+    assert.ok(r.score > 50 && r.score < 52, `expected a nudge, got ${r.score}`);
+  });
+
+  test("the congressional component cannot move the ownership score by more than five points", () => {
+    const most = netAccumulationScore({ ...QUIET, congress: congress(3) });
+    const least = netAccumulationScore({ ...QUIET, congress: congress(-3) });
+
+    assert.equal(most.score, 55);
+    assert.equal(least.score, 45);
+    for (const net of [-50, -10, -3, 3, 10, 50]) {
+      const s = netAccumulationScore({ ...QUIET, congress: congress(net) }).score;
+      assert.ok(s >= 45 && s <= 55, `net ${net} scored ${s}`);
+    }
+  });
+
+  test("three net trades saturates — a fourth adds nothing", () => {
+    const three = netAccumulationScore({ ...QUIET, congress: congress(3) }).score;
+    const ten = netAccumulationScore({ ...QUIET, congress: congress(10) }).score;
+    assert.equal(three, ten);
+  });
+
+  test("at 20% of the composite, congress alone cannot move the score by a point", () => {
+    const quiet = netAccumulationScore({ ...QUIET, congress: congress(0, 0, 0) }).score;
+
+    for (const net of [1, 3, 50, -1, -3, -50]) {
+      const withCongress = netAccumulationScore({ ...QUIET, congress: congress(net) }).score;
+      const before = composite(factors({ insider: sourced(quiet, SRC) })).value ?? 0;
+      const after = composite(factors({ insider: sourced(withCongress, SRC) })).value ?? 0;
+      assert.ok(
+        Math.abs(after - before) <= 1 + 1e-9,
+        `net ${net} moved the composite by ${(after - before).toFixed(3)}`,
+      );
+    }
+  });
+
+  test("congressional selling scores below congressional buying", () => {
+    const buying = netAccumulationScore({ ...QUIET, congress: congress(2) });
+    const selling = netAccumulationScore({ ...QUIET, congress: congress(-2) });
+    assert.ok(selling.score < 50 && buying.score > 50);
+    assert.match(buying.detail, /Congress net \+2 \(2 buy \/ 0 sell/);
+    assert.match(selling.detail, /Congress net -2 \(0 buy \/ 2 sell/);
+  });
+
+  test("congressional activity that nets to zero is not read as an absence", () => {
+    // One buy and one sell is evidence, and evidence that cancels. It must
+    // not be reported with the "nothing happened" wording.
+    const r = netAccumulationScore({ ...QUIET, congress: congress(0, 1, 1) });
+    assert.equal(r.score, 50);
+    assert.match(r.detail, /Congress net \+0 \(1 buy \/ 1 sell/);
+    assert.doesNotMatch(r.detail, /no insider trades/);
+  });
+
+  test("congress never overturns a decisive EDGAR reading", () => {
+    // Heavy insider selling plus the loudest possible congressional buying
+    // still has to land below neutral.
+    const r = netAccumulationScore({
+      ...QUIET,
+      netInsiderValue: -2_000_000,
+      distinctSellers: 3,
+      netHolderPercentChange: -4,
+      holdersDecreasing: 2,
+      congress: congress(3),
+    });
+    assert.ok(r.score < 50, `scored ${r.score}`);
   });
 });
 

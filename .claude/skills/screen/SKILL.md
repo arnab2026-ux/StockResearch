@@ -23,6 +23,7 @@ Useful variants:
 | `npm run screen -- --window=120` | Widen the ownership lookback from 90 days |
 | `npm run screen -- --refresh` | Bypass all caches and refetch |
 | `npm run screen -- --no-vault` | Skip writing to the Obsidian vault |
+| `npm run screen -- --no-congress` | Skip the US House Clerk PTR fetch |
 
 A full run takes several minutes: it makes roughly 250 rate-limited requests
 and is deliberately throttled. Do not parallelise it or remove the throttles.
@@ -51,6 +52,22 @@ The ownership factor measures **direction, not activity**. Insiders selling
 and funds cutting stakes push it below the neutral midpoint of 50. A quiet
 window with no trades on either side scores 50, because an absence of trading
 is not evidence of distribution.
+
+Inside that unchanged 20% weight it reads four things:
+
+| Component | Share of the factor |
+| --- | --- |
+| Insider dollar flow — Form 4 code `P` purchases less sales | 40% |
+| 5%+ holder stake change — net percentage points from 13D/G | 35% |
+| Breadth — distinct insider buyers net of sellers | 15% |
+| Congressional net direction — House PTR buys less sells | 10% |
+
+Congressional disclosure was funded out of the two largest components rather
+than by widening the factor, because it is a fourth reading of the same
+question, not a sixth factor. It is **counts and direction only** — the House
+discloses a dollar bracket, never a value. `--no-congress` skips the House
+fetch, and the remaining three components renormalise over their own weight;
+that is a different claim from a window that was checked and found quiet.
 
 The PEG factor is **inverted** — it is the only one where lower is better. It
 is trailing P/E divided by the forward consensus EPS growth rate, so it asks
@@ -129,6 +146,28 @@ value.
   17.73 → 22.58), rendered by the endpoints as +3.3%/yr. The trough is now
   named in the report, but that figure has not been checked against a second
   source.
+- **Congressional coverage is a floor, not a count.** 12% of PTRs are legacy
+  paper scans that extract to nothing, and the gap is systematic rather than
+  random — all 10 affected filers have zero readable filings in the window,
+  Ro Khanna among them. A congressional zero means either "did not trade" or
+  "files on paper". The unreadable count is printed beside every
+  congressional section and carried into the vault as
+  `congress_unreadable_ptrs`; quote it whenever quoting a zero.
+- **19 rows in 3 filings could not be parsed at all**, because `pdftotext`
+  lost the column alignment and stranded the transaction code away from its
+  dates. They are counted and reported, never reconstructed — guessing which
+  asset a stranded row belonged to would be inventing a position. All 19 were
+  Treasury or municipal rows in the current corpus, so no universe name was
+  lost, but that is an observation about this corpus and not a guarantee.
+- **Turning the House feed on moved 46 of 51 composites, but most of that is
+  renormalisation, not congressional signal.** A present-but-empty component
+  contributes a neutral 50 at 10% of the ownership weight, which pulls quiet
+  names toward neutral whether or not any member traded them. Maximum movement
+  was ±1.60. Do not read a small composite shift between a `--no-congress` run
+  and a normal one as a congressional finding.
+- **The congressional component is bounded to roughly ±1.0 on the
+  composite.** A first congressional purchase in an otherwise quiet name moves
+  the composite by about +0.33. It is a tiebreaker, not a driver.
 
 ## The Obsidian vault
 

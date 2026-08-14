@@ -66,6 +66,7 @@ no terms-of-service risk.
 | Financials, financial strength | SEC EDGAR XBRL `companyfacts` | Built |
 | Insider buying (20% of score) | SEC EDGAR Form 4 | Built |
 | Major holder activity | SEC EDGAR Schedule 13D/G | Built |
+| Congressional trading | US House Clerk STOCK Act PTRs | Built |
 | Price, market cap, P/E | Market data API | **Needs a key** |
 | Earnings surprise | Market data API | **Needs a key** |
 | Analyst upgrades/downgrades | Market data API, free tier only | **Needs a key** |
@@ -193,6 +194,62 @@ mechanics, not conviction. Only **`P`** (open-market purchase) signals an
 insider paying market price with their own money. ABSI in testing: 2 real
 buys against 8 excluded events — counting all of them would have inflated the
 signal fivefold.
+
+## Congressional disclosures — the House Clerk, and six traps
+
+The STOCK Act requires every member of the House to disclose each securities
+transaction of their own, their spouse's, or a dependent child's within 45
+days. The Clerk publishes them free, officially, with no key and no terms
+gate, which puts them on EDGAR's footing rather than the quote endpoints'.
+
+- Index: `disclosures-clerk.house.gov/public_disc/financial-pdfs/{YEAR}FD.ZIP`,
+  a ZIP holding one XML of every filing that year. `FilingType` `P` is the
+  Periodic Transaction Report — the trades. The rest are annual-disclosure
+  machinery carrying no transaction dates.
+- Documents: `/public_disc/ptr-pdfs/{YEAR}/{DocID}.pdf`.
+
+Text comes from shelling out to `pdftotext -layout`. **No OCR and no PDF npm
+dependency.** 88% of PTRs are e-filed with a real text layer, `-layout` is
+what keeps the owner, type, date and amount columns recoverable, and the
+binary ships with Git for Windows. OCR would buy the other 12% at the cost of
+inventing characters into a source whose whole value is that it is official.
+
+**The feed is filer-indexed, not ticker-indexed** — the same structural
+problem that keeps 13F out. There is no "who traded NVDA" query, only a year
+of PTRs each listing one member's trades. So the year is fetched once and
+inverted into a ticker map. Querying per company would mean re-reading the
+entire year 51 times.
+
+1. **Use the transaction date, never the filing date.** A filing dated
+   13 Aug 2026 can report trades from March 2025. In the live run, windowing
+   on transaction dates dropped 5 names — QCOM, NOW, PLTR, TXN, MDB — that
+   filing-date windowing would have manufactured a fresh signal for. The
+   filing date decides one thing only: which PDFs are worth downloading, which
+   is safe because a transaction always precedes its own disclosure.
+2. **Amounts are brackets, never values.** What is filed is
+   `$1,001 - $15,000`. A midpoint would be an estimated figure, and once
+   estimated it would be summed, netted and printed as though disclosed. The
+   range is modelled as a range and the score uses counts and direction only.
+   `AmountRange` has nowhere to put a value, and a test scans the source tree
+   and fails if a midpoint ever appears.
+3. **Options are not shares.** Pelosi's INTC entry is 200 call options, not
+   stock. The asset-type code (`[OP]`, `[OL]`) is carried through so a
+   derivative position is never presented as a share purchase.
+4. **Spouse and dependent trades dominate.** Most "Pelosi trades" are her
+   husband's. The owner code (`SP`, `DC`, `JT`, or absent for the member) is
+   recorded and shown rather than flattened into "the member bought".
+5. **Coverage is a floor, not a count.** 12% of PTRs are legacy paper scans
+   that extract empty, and the gap is systematic rather than random: all 10
+   affected filers have *zero* readable filings in the window, Ro Khanna among
+   them. A congressional figure of zero therefore means either "did not trade"
+   or "files on paper", and the two are not distinguishable from the number
+   alone. Unreadable counts travel with the results into the console and the
+   vault so the reader can tell which claim they are looking at.
+6. **Ticker validation against `UNIVERSE` is what makes parse noise
+   harmless.** Asset descriptions are full of parentheses and a
+   layout-preserving extraction of a wrapped table produces debris. A
+   parenthesised symbol that is not an exact universe member is discarded, so
+   noise becomes nothing rather than a fabricated position.
 
 ## Conventions
 

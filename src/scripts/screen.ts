@@ -12,6 +12,7 @@
  *   npm run screen -- --all         # include companies failing the filters
  *   npm run screen -- --window=90   # widen the insider lookback
  *   npm run screen -- --refresh     # bypass caches
+ *   npm run screen -- --no-congress # skip the House Clerk PTR pass
  */
 
 import "dotenv/config";
@@ -19,6 +20,12 @@ import "dotenv/config";
 import { UNIVERSE, CATEGORY_LABELS } from "../config/universe.js";
 import { resolveTickers } from "../edgar/tickers.js";
 import { cite, isVerified, valueOf } from "../lib/provenance.js";
+import {
+  fetchCongressionalTrades,
+  yearsCovering,
+  OWNER_LABELS,
+  type CongressTrade,
+} from "../providers/houseDisclosures.js";
 import {
   applyFilters,
   describe,
@@ -112,9 +119,130 @@ function renderCompany(c: ScreenedCompany): void {
     console.log(`    ${mark(f.passed)} ${f.name.padEnd(40)} ${f.detail}`);
   }
 
+  if (c.congress) {
+    console.log(`\n  Congressional disclosures (US House Clerk, ${c.congress.windowDays}d)`);
+    if (c.congress.trades.length === 0) {
+      console.log(`    none disclosed with a transaction date inside the window`);
+    } else {
+      for (const t of c.congress.trades) {
+        // Filer, whose account, direction, transaction date and the bracket
+        // exactly as filed — never a single dollar figure, which the House
+        // does not publish and this project will not invent.
+        console.log(
+          `    ${t.filer} (${OWNER_LABELS[t.owner]}, ${t.stateDistrict}) — ` +
+            `${t.direction} ${t.transactionDate}` +
+            (t.assetType ? ` [${t.assetType}]` : ""),
+        );
+        console.log(
+          `      ${t.amount?.asFiled ?? "amount UNVERIFIED"} as filed` +
+            ` · disclosed ${t.filedOn} · doc ${t.docId}`,
+        );
+      }
+      if (c.congress.optionTrades > 0) {
+        console.log(
+          `    ${c.congress.optionTrades} of these are options, not shares.`,
+        );
+      }
+    }
+    // Printed on both branches. "None disclosed" out of a partly unreadable
+    // window is a weaker claim than "none disclosed" out of a complete one,
+    // and the two must not read the same.
+    if (c.congress.unreadablePtrs > 0) {
+      console.log(
+        `    Coverage: ${c.congress.unreadablePtrs} PTR(s) in this window could ` +
+          `not be read, so this list may be incomplete.`,
+      );
+    }
+  }
+
   if (c.strength.caveats.length) {
     console.log(`\n  Caveats`);
     for (const caveat of c.strength.caveats) console.log(`    · ${caveat}`);
+  }
+}
+
+/**
+ * Reads the House Clerk's disclosures once for the whole run.
+ *
+ * Filer-indexed rather than ticker-indexed, so there is one pass over the
+ * window's PTRs and the result is inverted into a ticker map — the alternative
+ * is re-reading the same year for every company in the universe.
+ *
+ * Returns undefined only if the whole source failed, which the ownership
+ * factor reads as "not checked" rather than "checked and quiet".
+ */
+interface CongressPass {
+  byTicker: Map<string, CongressTrade[]>;
+  /** PTRs in the window that could not be read. Travels with the results. */
+  unreadablePtrs: number;
+}
+
+async function gatherCongress(
+  windowDays: number,
+  refresh: boolean,
+): Promise<CongressPass | undefined> {
+  const since = new Date(Date.now() - windowDays * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+  const years = yearsCovering(windowDays);
+
+  console.log(
+    `Reading US House Clerk disclosures (${years.join(", ")}) filed since ${since}…`,
+  );
+
+  try {
+    const result = await fetchCongressionalTrades(years, {
+      since,
+      refresh,
+      onProgress: (done, total) => {
+        if (done % 25 === 0 || done === total) {
+          process.stdout.write(`\r  ${done}/${total} PTRs`);
+        }
+      },
+    });
+
+    const hits = [...result.byTicker].reduce((n, [, list]) => n + list.length, 0);
+    const coverage =
+      result.ptrsInScope > 0 ? (result.ptrsRead / result.ptrsInScope) * 100 : 100;
+
+    console.log(
+      `\r  ${result.ptrsRead}/${result.ptrsInScope} PTRs read (${coverage.toFixed(0)}% of the window) · ` +
+        `${hits} trade(s) in ${result.byTicker.size} universe name(s) · ` +
+        `${result.gaps.length} unreadable`,
+    );
+    console.log(
+      `  ${result.rowsOutsideUniverse} row(s) outside the universe · ` +
+        `${result.rowsUnparsed} row(s) the extractor could not read`,
+    );
+
+    // Named, not swallowed: an unreadable scan is a hole in the evidence and
+    // has to look like one. The filers are listed because the gap is not
+    // random — a member who files on paper is invisible to this factor every
+    // single run, not occasionally.
+    for (const gap of result.gaps.slice(0, 5)) {
+      console.log(`    gap: ${gap.filer} doc ${gap.docId} — ${gap.reason}`);
+    }
+    if (result.gaps.length > 5) {
+      console.log(`    …and ${result.gaps.length - 5} more`);
+    }
+    if (result.gaps.length > 0) {
+      const filers = [...new Set(result.gaps.map((g) => g.filer))].sort();
+      console.log(
+        `  Congressional coverage is partial: ${result.gaps.length} of ` +
+          `${result.ptrsInScope} PTR(s) in the window were unreadable, across ` +
+          `${filers.length} filer(s). Trades in those filings are not counted ` +
+          `anywhere below.`,
+      );
+    }
+    console.log("");
+
+    return { byTicker: result.byTicker, unreadablePtrs: result.gaps.length };
+  } catch (err) {
+    console.warn(
+      `  House Clerk feed unavailable: ${err instanceof Error ? err.message : err}`,
+    );
+    console.warn(`  The ownership factor will be scored on EDGAR alone.\n`);
+    return undefined;
   }
 }
 
@@ -141,15 +269,20 @@ async function main(): Promise<void> {
   const runAt = new Date().toISOString().replace("T", " ").slice(0, 16);
   console.log(`Stock screen — ${runAt} UTC`);
   console.log(`Universe: ${entries.length} companies · insider window ${insiderWindowDays}d`);
-  console.log(`Sources: SEC EDGAR (fundamentals, Form 4, 13D/G), Nasdaq (quote,`);
-  console.log(`earnings surprise, EPS consensus forecast), TipRanks (analyst`);
-  console.log(`consensus and track records).\n`);
+  console.log(`Sources: SEC EDGAR (fundamentals, Form 4, 13D/G), US House Clerk`);
+  console.log(`(STOCK Act periodic transaction reports), Nasdaq (quote, earnings`);
+  console.log(`surprise, EPS consensus forecast), TipRanks (analyst consensus and`);
+  console.log(`track records).\n`);
 
   const byTicker = new Map(entries.map((e) => [e.ticker, e]));
   const { resolved, unresolved } = await resolveTickers(entries.map((e) => e.ticker));
   if (unresolved.length) {
     console.warn(`Unresolved tickers: ${unresolved.join(", ")}\n`);
   }
+
+  const congress = args.includes("--no-congress")
+    ? undefined
+    : await gatherCongress(insiderWindowDays, refresh);
 
   const companies: ScreenedCompany[] = [];
 
@@ -159,7 +292,16 @@ async function main(): Promise<void> {
 
     try {
       companies.push(
-        await gather(company, entry, { refresh, insiderWindowDays }),
+        await gather(company, entry, {
+          refresh,
+          insiderWindowDays,
+          ...(congress
+            ? {
+                congressTrades: congress.byTicker,
+                congressUnreadablePtrs: congress.unreadablePtrs,
+              }
+            : {}),
+        }),
       );
       process.stdout.write(".");
     } catch (err) {
