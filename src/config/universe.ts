@@ -1,14 +1,20 @@
 /**
- * Screening universe: AI, AI-adjacent semiconductor manufacturing, and
- * AI-driven biotech. Nasdaq-weighted, but a few NYSE names are included
- * where they are core to the theme.
+ * Screening universe: AI, AI-adjacent semiconductor manufacturing, AI-driven
+ * biotech, and defence. Nasdaq-weighted, but NYSE names are included where
+ * they are core to a theme — the defence primes are almost all NYSE.
  *
  * Tickers here are *candidates* — `resolveUniverse()` validates every one
  * against the SEC's own ticker file, so a typo or a delisted name surfaces
  * as an unresolved warning rather than silently dropping out of the screen.
  */
 
-export type Category = "ai-core" | "ai-software" | "semis" | "semicap" | "biotech";
+export type Category =
+  | "ai-core"
+  | "ai-software"
+  | "semis"
+  | "semicap"
+  | "biotech"
+  | "defence";
 
 export type Exchange = "nasdaq" | "nyse";
 
@@ -28,6 +34,7 @@ export const UNIVERSE: readonly UniverseEntry[] = [
   { ticker: "AMZN", category: "ai-core", exchange: "nasdaq" },
   { ticker: "META", category: "ai-core", exchange: "nasdaq" },
   { ticker: "AVGO", category: "ai-core", exchange: "nasdaq" },
+  { ticker: "CBRS", category: "ai-core", exchange: "nasdaq" },
   { ticker: "TSLA", category: "ai-core", exchange: "nasdaq" },
 
   // --- AI software / applied AI ------------------------------------------
@@ -78,9 +85,25 @@ export const UNIVERSE: readonly UniverseEntry[] = [
   { ticker: "NTRA", category: "biotech", exchange: "nasdaq" },
   { ticker: "ILMN", category: "biotech", exchange: "nasdaq" },
   { ticker: "PACB", category: "biotech", exchange: "nasdaq" },
+  { ticker: "TXG", category: "biotech", exchange: "nasdaq" },
+  { ticker: "TWST", category: "biotech", exchange: "nasdaq" },
   { ticker: "MRNA", category: "biotech", exchange: "nasdaq" },
   { ticker: "MDGL", category: "biotech", exchange: "nasdaq" },
   { ticker: "DNA", category: "biotech", exchange: "nyse" },
+
+  // --- Defence: primes, then services and defence tech -------------------
+  // Mature primes and higher-growth defence tech score very differently on
+  // FCF yield and PEG, so both ends are present rather than just the primes.
+  { ticker: "LMT", category: "defence", exchange: "nyse" },
+  { ticker: "RTX", category: "defence", exchange: "nyse" },
+  { ticker: "NOC", category: "defence", exchange: "nyse" },
+  { ticker: "GD", category: "defence", exchange: "nyse" },
+  { ticker: "LHX", category: "defence", exchange: "nyse" },
+  { ticker: "HII", category: "defence", exchange: "nyse" },
+  { ticker: "LDOS", category: "defence", exchange: "nyse" },
+  { ticker: "BAH", category: "defence", exchange: "nyse" },
+  { ticker: "AVAV", category: "defence", exchange: "nasdaq" },
+  { ticker: "KTOS", category: "defence", exchange: "nasdaq" },
 ];
 
 export const CATEGORY_LABELS: Record<Category, string> = {
@@ -89,6 +112,7 @@ export const CATEGORY_LABELS: Record<Category, string> = {
   semis: "Semiconductors",
   semicap: "Semicap equipment",
   biotech: "AI-driven biotech",
+  defence: "Defence",
 };
 
 export function tickersIn(category: Category): string[] {
